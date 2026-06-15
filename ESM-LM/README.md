@@ -5,7 +5,7 @@ This repository implements two complementary methods for multi-task model mergin
 - **ESM-M** (Essential Subspace Mixture — Merging): Fuses multiple task-specific models into a single merged model via subspace decomposition and Procrustes orthogonalization.
 - **ESM-R** (Essential Subspace Mixture — Routing): Builds a dynamic Mixture of Experts from task-specific models, routing each input to the best expert via prototype-based cosine similarity.
 
-Based on [RoBERTa](https://arxiv.org/abs/1907.11692)-base/large fine-tuned on 8 GLUE tasks.
+Based on [RoBERTa](https://arxiv.org/abs/1907.11692) fine-tuned on 8 GLUE tasks.
 
 ## Project Structure
 
