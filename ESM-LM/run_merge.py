@@ -20,7 +20,6 @@ from esm_moe_eval import ESMMoEEvaluator
 
 args = None
 DEVICE = 'cuda:0'
-BASE_DATA_DIR = '/seu_share2/home/gengxin/230238562/WorkBench/ESM-LM/discriminative_moe'
 
 
 
@@ -193,7 +192,7 @@ def run_merge(
     args.models_to_merge_dict = models_to_merge_dict
 
     if args.merge_method in ('esm_m', 'esm_r'):
-        principal_data_path = getattr(args, 'principal_data_path', None) or f'{BASE_DATA_DIR}/data/validation.json'
+        principal_data_path = getattr(args, 'principal_data_path', None) or 'data/validation.json'
         principal_direction_dict = get_principal_direction(
             args.models_name, args.base_model.param_dict, args.model_path_template,
             data_path=principal_data_path,
@@ -222,7 +221,7 @@ def run_merge(
         proto_proxy_num = getattr(args, 'prototype_proxy_num', 32)
         prototype_dict = None
         if eval_mode == "route":
-            proto_data_path = prototype_data_path if prototype_data_path else f'{BASE_DATA_DIR}/data/validation.json'
+            proto_data_path = prototype_data_path if prototype_data_path else 'data/validation.json'
             prototype_dict = merger.collect_prototypes_for_moe(
                 base_model=base_model,
                 finetuned_models=models_finetuned,
@@ -338,7 +337,7 @@ def run_merge(
             merged_task_vector=merged_task_vector,
             models_finetuned=models_finetuned,
             expert_performance_key=expert_performance_key,
-            val_data_path=f'{BASE_DATA_DIR}/data/validation.json',
+            val_data_path='data/validation.json',
             left=0.0,
             right=5.0,
             tolerance=0.1,

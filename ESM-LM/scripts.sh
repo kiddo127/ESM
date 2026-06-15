@@ -1,10 +1,8 @@
 
 set -e pipefail
 
-BASE_DIR="/seu_share2/home/gengxin/230238562/WorkBench/ESM-LM/discriminative_moe"
-
 date_today=$(date '+%Y-%m-%d')
-outdir=${outdir:="${BASE_DIR}/outs/merge_results"}
+outdir=${outdir:="outs/merge_results"}
 mkdir -p ${outdir}
 
 
@@ -36,7 +34,7 @@ src_merge=("${models_name[@]:0:$select_merge}")
 echo ">>> merged from $select_merge tasks"
 echo ">>> merge ${src_merge[@]}"
 
-data_path="${BASE_DIR}/data/test.json"
+data_path="data/test.json"
 }
 
 
@@ -55,7 +53,7 @@ fi
 src_merge=("${models_name[@]:0:$select_merge}")
 
 scaling=${scaling:="1.0"}
-principal_data_path=${principal_data_path:="${BASE_DIR}/data/validation.json"}
+principal_data_path=${principal_data_path:="data/validation.json"}
 seed=${seed:="10"}
 prototype_proxy_num=${prototype_proxy_num:="64"}
 
@@ -76,7 +74,7 @@ python run_merge.py \
 --exclude-param ".*classifier.*" ".*bias.*" \
 --scaling $scaling \
 --principal-data-path $principal_data_path \
---save-path ${save_path:="${BASE_DIR}/outs/esm_merged"} \
+--save-path ${save_path:="outs/esm_merged"} \
 --prototype-proxy-num $prototype_proxy_num \
 --seed $seed \
 --outdir $outdir
@@ -101,7 +99,7 @@ function esm_r(){
     merged_model_path=${merged_model_path:=""}
     prototype_proxy_num=${prototype_proxy_num:="64"}
     seed=${seed:="10"}
-    principal_data_path=${principal_data_path:="${BASE_DIR}/data/validation.json"}
+    principal_data_path=${principal_data_path:="data/validation.json"}
     mode=${mode:-route}
     rank=${rank:-0}
     batch_size=${batch_size:-1}

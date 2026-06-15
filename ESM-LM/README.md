@@ -5,7 +5,7 @@ This repository implements two complementary methods for multi-task model mergin
 - **ESM-M** (Essential Subspace Mixture — Merging): Fuses multiple task-specific models into a single merged model via subspace decomposition and Procrustes orthogonalization.
 - **ESM-R** (Essential Subspace Mixture — Routing): Builds a dynamic Mixture of Experts from task-specific models, routing each input to the best expert via prototype-based cosine similarity.
 
-Based on [RoBERTa](https://arxiv.org/abs/1907.11692)-base/large fine-tuned on 8 GLUE tasks.
+Based on [RoBERTa](https://arxiv.org/abs/1907.11692) fine-tuned on 8 GLUE tasks.
 
 ## Project Structure
 
@@ -42,28 +42,20 @@ Key packages: PyTorch >= 2.0, Transformers >= 4.30, Datasets >= 2.14.
 
 ## Directory Setup
 
-This is a **code-only** repository. Data, model checkpoints, and outputs are stored in a separate data directory. Before running, edit the two path variables:
-
-**In [`scripts.sh`](scripts.sh) (line 4):**
-```bash
-BASE_DIR="/path/to/your/discriminative_moe"
-```
-
-**In [`run_merge.py`](run_merge.py#L23):**
-```python
-BASE_DATA_DIR = '/path/to/your/discriminative_moe'
-```
-
-The data directory must have this structure:
+This is a **code-only** repository — all paths are relative to the project root.  Place data, models, and outputs alongside the code:
 
 ```
-discriminative_moe/
+ESM-LM/
+├── config/
+├── run_merge.py
+├── ...
 ├── data/
 │   ├── test.json              # GLUE test data
 │   └── validation.json        # Proxy data for principal direction / prototypes
 ├── outs/
-│   └── merge_results/         # Results output (created automatically)
-└── ../roberta/                # Finetuned models (relative to this project)
+│   ├── merge_results/         # Results output (created automatically)
+│   └── esm_merged/            # ESM-M merged model (created after merge)
+└── ../roberta/                # Finetuned models (relative to project root)
     └── {task}/
         └── roberta-base_lr1e-05/
             ├── config.json
