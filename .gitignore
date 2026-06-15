@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Outputs / results
+*.csv
+*.xlsx
+*.md
+!README.md
+
+# Model weights
+*.safetensors
+*.bin
+*.pt
+checkpoint-*/
+
+# Data
+*.json
+*.npz
+*.npy
+*.parquet
