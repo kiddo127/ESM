@@ -1,4 +1,4 @@
-# Essential Subspace Merging for Training-Free Multi-Task Learning
+# Essential Subspace Merging
 
 [ESM-ViT](ESM-ViT/) | [ESM-RoBERTa](ESM-RoBERTa/)
 
