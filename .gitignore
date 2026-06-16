@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Data files
+*.npy
+*.npz
+*.csv
+*.xlsx
+*.log
+
+# Outputs
+outs/
+
+# Documents
+*.pdf
+*.md
+
+# Model files
+*.safetensors
+*.bin
+*.pt
+checkpoint-*/
+
+# Model directories
+roberta
+roberta_large
+
+# Large zip files
+roberta_large-*.zip
+
+# Data folders under discriminative and generative
+discriminative*/data
+generative/data
+
+# Other
+qwen
+HELM-Extended-Local
