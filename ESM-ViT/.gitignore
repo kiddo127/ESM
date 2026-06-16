@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+
+# Hydra / logs
+logs/
+outputs/
+multirun/
+
+# WandB
+wandb/
+
+# Results (generated at runtime)
+results/
+
+# Merged models
+merged_models/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
