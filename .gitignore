@@ -22,5 +22,9 @@ checkpoint-*/
 
 # Docs (except README)
 *.md
+!README.md
 !*/README.md
+
+# Allow assets
+!assets/*.png
 
