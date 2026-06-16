@@ -1,4 +1,4 @@
-# ESM & ESM++: Essential Subspace Mixture for Training-Free Multi-Task Model Merging
+# Essential Subspace Merging for Training-Free Multi-Task Model Merging
 
 [ESM-RoBERTa](ESM-RoBERTa/) | [ESM-ViT](ESM-ViT/)
 
