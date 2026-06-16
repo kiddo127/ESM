@@ -5,10 +5,11 @@
 **ESM** (Essential Subspace Merging) and **ESM++** (Essential Subspace Routing) are two training-free methods for merging multiple task-specific models into a single unified model. They require only a handful of unlabeled proxy samples (≤32 per task) — no retraining, no gradient-based optimization.
 
 - **ESM** — static merge: compresses all experts into **one compact model** with single-model inference cost.
-- **ESM++** — dynamic routing: builds a lightweight **mixture of experts** on top of the ESM base, routing each input to the best expert via cosine similarity with pre-computed prototypes.
-
 ![ESM](assets/ESM_M.png)
+- **ESM++** — dynamic routing: builds a lightweight **mixture of experts** on top of the ESM base, routing each input to the best expert via cosine similarity with pre-computed prototypes.
 ![ESM++](assets/ESM_R.png)
+
+
 
 ---
 
@@ -73,27 +74,15 @@ No auxiliary router network — routing is **parameter-free** and uses only pre-
 
 ## Results
 
-### GLUE Benchmark (8 tasks, RoBERTa-base)
 
-![Performance](assets/performance.png)
+### Visual Recognition (CLIP-ViT, 8–20 tasks)
 
-| Method | Avg (norm) | Avg (abs) |
-|:-------|-----------:|----------:|
-| Single expert (oracle) | 100.0 | 82.8 |
-| Task Arithmetic | 80.1 | 66.1 |
-| TIES-Merging | 86.7 | 71.6 |
-| **ESM** | **91.8** | **75.5** |
-| **ESM++** (r=8) | **92.0** | **76.0** |
+![Performance](assets/vit_performance.png)
 
-### Visual Recognition (ViT-B-16, 8–20 tasks)
+### GLUE Benchmark (RoBERTa-base, 8 tasks)
 
-| Tasks | ESM | ESM++ (r=32) |
-|:------|:----|:-------------|
-| 8 tasks | 91.5 | 92.1 |
-| 14 tasks | 89.7 | 90.3 |
-| 20 tasks | 87.2 | 88.1 |
+![Performance](assets/roberta_performance.png)
 
-Full results in [ESM-RoBERTa](ESM-RoBERTa/) and [ESM-ViT](ESM-ViT/).
 
 ---
 
@@ -116,34 +105,7 @@ ESM/
     └── src/
 ```
 
-## Quick Start
 
-```bash
-# ESM-RoBERTa
-cd ESM-RoBERTa
-pip install -r requirements.txt
-python prepare_validation.py          # Generate data/validation.json
-bash run_esm.sh                       # ESM merging
-bash run_esm_pp.sh                    # ESM++ routing
-
-# ESM-ViT
-cd ESM-ViT
-bash run_esm.sh                       # ESM merging
-bash run_esmpp.sh                     # ESM++ routing
-```
-
-For data and model preparation details, see the README in each sub-project.
-
-## Citation
-
-```bibtex
-@article{esm2025,
-  title   = {Essential Subspace Merging for Training-Free Multi-Task Learning},
-  author  = {Zheng, Gengxin and others},
-  journal = {arXiv preprint},
-  year    = {2025}
-}
-```
 
 ## License
 
