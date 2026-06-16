@@ -191,7 +191,7 @@ def run_merge(
         models_to_merge_dict[name] = model
     args.models_to_merge_dict = models_to_merge_dict
 
-    if args.merge_method in ('esm_m', 'esm_r'):
+    if args.merge_method in ('esm', 'esm_pp'):
         principal_data_path = getattr(args, 'principal_data_path', None) or 'data/validation.json'
         principal_direction_dict = get_principal_direction(
             args.models_name, args.base_model.param_dict, args.model_path_template,
@@ -203,11 +203,11 @@ def run_merge(
     # 3. merge
     merger = MergingMethod(**args)
 
-    # === ESM-R (routing) branch: dynamic routing, no weight fusion ===
-    if args.merge_method == 'esm_r':
+    # === ESM++ (routing) branch: dynamic routing, no weight fusion ===
+    if args.merge_method == 'esm_pp':
         prototype_data_path = getattr(args, 'prototype_data_path', None)
 
-        expert_dict, base_param_dict = merger.esm_r(
+        expert_dict, base_param_dict = merger.esm_pp(
             base_model=args.base_model,
             models_to_merge_dict=args.models_to_merge_dict,
             principal_direction_dict=principal_direction_dict,
@@ -232,7 +232,7 @@ def run_merge(
 
         if args.data_path is not None:
             metrics = {
-                "method": "esm_r",
+                "method": "esm_pp",
                 "seed": args.seed,
                 "prototype_proxy_num": proto_proxy_num,
             }
@@ -258,7 +258,7 @@ def run_merge(
 
             batch_size = getattr(args, 'batch_size', 1)
 
-            for data_name, samples in tqdm.tqdm(task_data.items(), desc='infer glue (esm_r)'):
+            for data_name, samples in tqdm.tqdm(task_data.items(), desc='infer glue (esm_pp)'):
                 evaluator.current_task = data_name  # For routing accuracy tracking
 
                 # Load classifier head for this task
@@ -322,13 +322,13 @@ def run_merge(
             metrics['avg_abs'] = float(f"{avg_score_abs:.2f}")
             utils.save_excel(metrics, args.outdir, log_name)
 
-        return  # ESM-R done (no weight fusion, no scaling search)
+        return  # ESM++ done (no weight fusion, no scaling search)
 
     # === Regular merge methods (weight fusion) ===
     merge_method = getattr(merger, args.merge_method)
     merged_param = merge_method(**args)
 
-    if args.merge_method == 'esm_m':
+    if args.merge_method == 'esm':
 
         merged_task_vector = merged_param - args.base_model
 

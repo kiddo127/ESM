@@ -38,11 +38,11 @@ data_path="data/test.json"
 }
 
 
-function esm_m(){
+function esm(){
 
 pos
 
-yml='config/esm_m.yml'
+yml='config/esm.yml'
 select_merge=${select_merge:="8"}
 
 if [ $select_merge -eq 1 ]; then
@@ -82,11 +82,11 @@ python run_merge.py \
 }
 
 
-function esm_r(){
+function esm_pp(){
 
     pos
 
-    yml='config/esm_r.yml'
+    yml='config/esm_pp.yml'
     select_merge=${select_merge:="8"}
 
     if [ $select_merge -eq 1 ]; then

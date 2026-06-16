@@ -1,4 +1,4 @@
-merge_method: esm_r
+merge_method: esm_pp
 models_to_merge: auto
 scaling: 1.0
 models_name: auto

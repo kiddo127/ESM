@@ -20,11 +20,11 @@ class MergingMethod:
         return self.models_to_merge[self.models_name[model_name]]
 
     # ==================================================================
-    #  ESM-M (Essential Subspace Mixture — merging version)
+    #  ESM (Essential Subspace Merging)
     # ==================================================================
     @utils.args_inspector
     @torch.inference_mode()
-    def esm_m(
+    def esm(
         self,
         base_model,
         models_to_merge_dict: dict,
@@ -36,7 +36,7 @@ class MergingMethod:
         orthogonalize = True
         detect_task_name = list(models_to_merge_dict.keys())[0]
 
-        print(f"ESM-M (merging): fusing {T} tasks, sv_reduction={sv_reduction:.3f}")
+        print(f"ESM (merging): fusing {T} tasks, sv_reduction={sv_reduction:.3f}")
 
         task_vectors = [model - base_model for model in models_to_merge_dict.values()]
         task_vectors_dict = {task: model - base_model for task, model in models_to_merge_dict.items()}
@@ -74,11 +74,11 @@ class MergingMethod:
         return merged_param
 
     # ==================================================================
-    #  ESM-R (Essential Subspace Mixture — routing version, no weight fusion)
+    #  ESM++ (Essential Subspace Routing — no weight fusion)
     # ==================================================================
     @utils.args_inspector
     @torch.inference_mode()
-    def esm_r(
+    def esm_pp(
         self,
         base_model,
         models_to_merge_dict: dict,
