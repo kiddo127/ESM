@@ -45,6 +45,18 @@ ESM/
     └── src/
 ```
 
+## 📝 Citation
+If you use this work in your research, please cite our paper:
+
+```
+@inproceedings{li2025one,
+  title={One-Shot Knowledge Transfer for Scalable Person Re-Identification},
+  author={Li, Longhua and Qi, Lei and Geng, Xin},
+  booktitle={Proceedings of the IEEE/CVF International Conference on Computer Vision},
+  pages={668--677},
+  year={2025}
+}
+```
 
 
 ## License
