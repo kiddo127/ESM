@@ -49,12 +49,12 @@ ESM/
 If you use this work in your research, please cite our paper:
 
 ```
-@inproceedings{li2025one,
-  title={One-Shot Knowledge Transfer for Scalable Person Re-Identification},
-  author={Li, Longhua and Qi, Lei and Geng, Xin},
-  booktitle={Proceedings of the IEEE/CVF International Conference on Computer Vision},
-  pages={668--677},
-  year={2025}
+@inproceedings{li2026model,
+  title={Model merging in the essential subspace},
+  author={Li, Longhua and Qi, Lei and Tian, Qi and Geng, Xin},
+  booktitle={Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition},
+  pages={31145--31154},
+  year={2026}
 }
 ```
 
