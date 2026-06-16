@@ -47,7 +47,7 @@ For detailed instructions on fine-tuning RoBERTa experts and preparing GLUE test
 
 ### Validation Data
 
-Run the provided script to generate `validation.json` from GLUE validation splits:
+**You must run the following command before using ESM/ESM++.** It generates `data/validation.json`, which is required for computing principal directions (ESM) and collecting routing prototypes (ESM++):
 
 ```bash
 python prepare_validation.py
