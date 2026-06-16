@@ -1,9 +1,9 @@
-# ESM-LM: Essential Subspace Mixture for Language Models
+# ESM-LM: Essential Subspace Merging for Language Models
 
 This repository implements two complementary methods for multi-task model merging:
 
 - **ESM** (Essential Subspace Merging): Fuses multiple task-specific models into a single merged model via subspace decomposition and Procrustes orthogonalization.
-- **ESM++** (Essential Subspace Routing): Builds a dynamic Mixture of Experts from task-specific models, routing each input to the best expert via prototype-based cosine similarity.
+- **ESM++** (Essential Subspace Merging and Mixture): Builds a dynamic Mixture of Experts from task-specific models, routing each input to the best expert via prototype-based cosine similarity.
 
 Based on [RoBERTa](https://arxiv.org/abs/1907.11692) fine-tuned on 8 GLUE tasks.
 
