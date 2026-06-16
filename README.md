@@ -7,7 +7,8 @@
 - **ESM** — static merge: compresses all experts into **one compact model** with single-model inference cost.
 - **ESM++** — dynamic routing: builds a lightweight **mixture of experts** on top of the ESM base, routing each input to the best expert via cosine similarity with pre-computed prototypes.
 
-![Method Overview](assets/method.png)
+![ESM](assets/ESM_M.png)
+![ESM++](assets/ESM_R.png)
 
 ---
 
