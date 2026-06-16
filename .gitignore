@@ -3,37 +3,24 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 
-# Data files
-*.npy
-*.npz
+# Outputs
 *.csv
 *.xlsx
 *.log
 
-# Outputs
-outs/
-
-# Documents
-*.pdf
-*.md
-
-# Model files
+# Weights
 *.safetensors
 *.bin
 *.pt
 checkpoint-*/
 
-# Model directories
-roberta
-roberta_large
+# Data
+*.json
+*.npz
+*.npy
+*.parquet
 
-# Large zip files
-roberta_large-*.zip
+# Docs (except README)
+*.md
+!*/README.md
 
-# Data folders under discriminative and generative
-discriminative*/data
-generative/data
-
-# Other
-qwen
-HELM-Extended-Local

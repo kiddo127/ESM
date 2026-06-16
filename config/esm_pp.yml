@@ -1,0 +1,8 @@
+merge_method: esm_pp
+models_to_merge: auto
+scaling: 1.0
+models_name: auto
+exclude_param: auto
+model_loader: auto
+dtype: auto
+rank: 0

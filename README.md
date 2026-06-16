@@ -1,0 +1,131 @@
+# ESM-LM: Essential Subspace Mixture for Language Models
+
+This repository implements two complementary methods for multi-task model merging:
+
+- **ESM** (Essential Subspace Merging): Fuses multiple task-specific models into a single merged model via subspace decomposition and Procrustes orthogonalization.
+- **ESM++** (Essential Subspace Routing): Builds a dynamic Mixture of Experts from task-specific models, routing each input to the best expert via prototype-based cosine similarity.
+
+Based on [RoBERTa](https://arxiv.org/abs/1907.11692) fine-tuned on 8 GLUE tasks.
+
+## Project Structure
+
+```
+ESM-LM/
+├── config/
+│   ├── esm.yml                # ESM merge config
+│   ├── esm_pp.yml             # ESM++ routing config
+│   └── glue.py                # GLUE evaluation metric
+├── run_merge.py               # Main entry point
+├── merge.py                   # Core merge/routing algorithms
+├── esm_moe_eval.py            # ESM++ dynamic router + evaluator
+├── essential_subspace_decomposition.py  # PCA / principal direction
+├── search_scaling.py          # Optimal scaling coefficient search
+├── param.py                   # Parameter arithmetic wrapper
+├── eval.py                    # GLUE evaluation utilities
+├── utils.py                   # I/O, data loading, helpers
+├── sparsify.py                # Sparsification utilities
+├── scripts.sh                 # Shell functions (esm, esm_pp)
+├── run_esm.sh                 # ESM example run script
+├── run_esm_pp.sh              # ESM++ example run script
+└── requirements.txt           # Python dependencies
+```
+
+## Requirements
+
+```bash
+conda create -n esm python=3.10
+conda activate esm
+pip install -r requirements.txt
+```
+
+Key packages: PyTorch >= 2.0, Transformers >= 4.30, Datasets >= 2.14.
+
+## Data and Model Preparation
+
+For detailed instructions on preparing GLUE data and fine-tuning RoBERTa experts, refer to the [Twin-Merging](https://github.com/LZY-the-boys/Twin-Merging) project. Place the prepared files in the following structure:
+
+```
+ESM-LM/
+├── config/
+├── run_merge.py
+├── ...
+├── data/
+│   ├── test.json              # GLUE test data
+│   └── validation.json        # Proxy data for principal direction / prototypes
+├── outs/
+│   ├── merge_results/         # Results output (created automatically)
+│   └── esm_merged/            # ESM merged model (created after merge)
+└── ../roberta/                # Finetuned models (relative to project root)
+    └── {task}/
+        └── roberta-base_lr1e-05/
+            ├── config.json
+            ├── model.safetensors
+            └── classifier_head.pt
+```
+
+The 8 GLUE tasks are: `cola`, `sst2`, `mrpc`, `stsb`, `qqp`, `mnli`, `qnli`, `rte`.
+
+For roberta-large, use `../roberta_large/{task}/roberta-large_lr1e-05/`.
+
+## Usage
+
+### ESM (Merging)
+
+Fuse multiple task-specific models into one merged checkpoint, then evaluate:
+
+```bash
+bash run_esm.sh
+```
+
+Or with custom parameters:
+
+```bash
+source scripts.sh
+CUDA_VISIBLE_DEVICES=0 seed=0 prototype_proxy_num=32 esm
+```
+
+Key parameters:
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `select_merge` | 8 | Number of tasks to merge |
+| `seed` | 10 | Random seed |
+| `prototype_proxy_num` | 32 | Proxy samples per task for PCA |
+| `principal_data_path` | `data/validation.json` | Data for principal direction |
+| `save_path` | `outs/esm_merged` | Merged model output path |
+
+After merging, the model is saved to `save_path` and evaluated on `data/test.json`.
+
+### ESM++ (Routing)
+
+Use the ESM merged model as base, extract per-task experts, and route dynamically:
+
+```bash
+bash run_esm_pp.sh
+```
+
+Or with custom parameters:
+
+```bash
+source scripts.sh
+CUDA_VISIBLE_DEVICES=0 rank=8 seed=0 prototype_proxy_num=32 \
+    merged_model_path=outs/esm_merged esm_pp
+```
+
+Key parameters:
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `rank` | 8 | Expert low-rank dimension (0 = auto d/T) |
+| `mode` | `route` | Routing mode: `route` / `oracle` / `base` |
+| `merged_model_path` | `outs/esm_merged` | Base model for MoE |
+| `prototype_proxy_num` | 32 | Proxy samples per task for routing prototypes |
+
+**Modes:**
+- `route` — prototype-based cosine similarity routing (default)
+- `oracle` — directly use the correct expert (upper bound performance)
+- `base` — no routing, run the base merged model directly
+
+### Output
+
+Results are saved to `outs/merge_results/results.csv` and `results.md`, including per-task and average scores.
+
+ESM++ additionally saves routing accuracy to `routing_accuracy_rank{rank}_seed{seed}.json`.
