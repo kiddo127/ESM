@@ -56,6 +56,12 @@ If you use this work in your research, please cite our paper:
   pages={31145--31154},
   year={2026}
 }
+@article{li2026model,
+  title={Essential Subspace Merging for Multi-Task Learning},
+  author={Li, Longhua and Qi, Lei and Geng, Xin and Tian, Qi},
+  journal={arXiv preprint arXiv:2606.19164},
+  year={2026}
+}
 ```
 
 
