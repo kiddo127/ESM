@@ -99,7 +99,7 @@ def esm_merge(task_vector_dict, config, cov_dict, principal_direction_dict):
                         )
                     )
 
-    # inter-layer scaling
+    # inter-layer scaling (task consensus)
     norms = {
         'attn.in_proj_weight': [],
         'attn.out_proj.weight': [],
