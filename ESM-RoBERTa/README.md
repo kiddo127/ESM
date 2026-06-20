@@ -43,7 +43,7 @@ Key packages: PyTorch >= 2.0, Transformers >= 4.30, Datasets >= 2.14.
 
 ## Data and Model Preparation
 
-For detailed instructions on fine-tuning RoBERTa experts and preparing GLUE test data, refer to the [Twin-Merging](https://github.com/LZY-the-boys/Twin-Merging) project.
+For detailed instructions on fine-tuning RoBERTa experts and preparing GLUE test data, refer to the [WUDI-Merging](https://github.com/nathanielyvo/WUDI-Merging) project.
 
 ### Validation Data
 
@@ -148,4 +148,4 @@ ESM++ additionally saves routing accuracy to `routing_accuracy_rank{rank}_seed{s
 
 ## Acknowledgments
 
-Our framework builds upon the [Twin-Merging](https://github.com/LZY-the-boys/Twin-Merging) project, from which we adopt the fine-tuning pipeline, GLUE data preparation, and parameter arithmetic utilities.
+Our framework builds upon the [WUDI-Merging](https://github.com/nathanielyvo/WUDI-Merging) project, from which we adopt the fine-tuning pipeline, GLUE data preparation, and parameter arithmetic utilities.
