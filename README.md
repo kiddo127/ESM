@@ -15,14 +15,17 @@
 ## Results
 
 
-### Visual Recognition (CLIP-ViT, 8–20 tasks)
+### Vision Model Merging
 
 ![Performance](assets/vit_performance.png)
 
-### GLUE Benchmark (RoBERTa-base, 8 tasks)
+### Discriminative Language Model Merging
 
 ![Performance](assets/roberta_performance.png)
 
+### Generative Language Model Merging
+
+![Performance](assets/llama_performance.png)
 
 ---
 
