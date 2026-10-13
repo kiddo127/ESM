@@ -17,9 +17,9 @@ port: 12355
 n_eval_points: 31
 device: "cuda"
 batch_size: 32
-# Set paths below — change to your own dataset and model directories
-data_location: "~/data"                              # path to downloaded datasets
-model_location: "~/model-merging-models/checkpoints" # path to finetuned checkpoints
+# Set paths below — either export the env vars or edit the inline defaults.
+data_location: "${oc.env:DATA_ROOT,./data}"                 # dataset root (env: DATA_ROOT)
+model_location: "${oc.env:MODEL_ROOT,./checkpoints}"        # finetuned checkpoints root (env: MODEL_ROOT)
 save_subfolder: ""
 pca_batch_size: 32
 seed: 1
@@ -28,13 +28,22 @@ seed: 1
 save_main_model: False
 main_model_path: ""
 lora_rank: 32
-oracle_routing: False
 results_save_path: ""
 proxy_n_samples: 32
 
+# Prototype router: source ('base' = ESM-fused main model | 'finetune' = the
+# task's own finetuned model) and cluster count per task (1 = single mean prototype).
+proto_src: "base"
+proto_k: 1
+
+# ESM++ inference: the low-rank experts stay resident on GPU and are applied as
+# (x@A^T)@B^T; torch.compile(mode="reduce-overhead") then fuses the whole forward
+# (~1.0x the base ESM latency).
+compile_model: True
+
 wandb:
   project: task-vectors
-  mode: online
+  mode: offline
   group: ${model}
 
 hydra:

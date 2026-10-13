@@ -1,5 +1,5 @@
 import os
-os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
+os.environ.setdefault('HF_ENDPOINT', 'https://hf-mirror.com')
 import torch
 from collections import defaultdict
 import tqdm
@@ -16,10 +16,13 @@ import pandas as pd
 
 from essential_subspace_decomposition import get_principal_direction
 from search_scaling import search_scaling_for_merge
-from esm_moe_eval import ESMMoEEvaluator
 
 args = None
 DEVICE = 'cuda:0'
+
+MODEL_ROOT = os.environ.get('MODEL_ROOT', '../roberta')
+MODEL_LARGE_ROOT = os.environ.get('MODEL_LARGE_ROOT', '../roberta_large')
+DATA_ROOT = os.environ.get('DATA_ROOT', 'data')
 
 
 
@@ -53,11 +56,11 @@ def run_pretrained(
 ): 
 
     global model_path_template, head_path_template
-    model_path_template='../roberta/{name}/roberta-base_lr1e-05'
-    head_path_template='../roberta/{name}/roberta-base_lr1e-05/classifier_head.pt'
+    model_path_template = MODEL_ROOT + '/{name}/roberta-base_lr1e-05'
+    head_path_template = MODEL_ROOT + '/{name}/roberta-base_lr1e-05/classifier_head.pt'
     if 'large' in args.base_model:
-        model_path_template='../roberta_large/{name}/roberta-large_lr1e-05'
-        head_path_template='../roberta_large/{name}/roberta-large_lr1e-05/classifier_head.pt'
+        model_path_template = MODEL_LARGE_ROOT + '/{name}/roberta-large_lr1e-05'
+        head_path_template = MODEL_LARGE_ROOT + '/{name}/roberta-large_lr1e-05/classifier_head.pt'
 
     # \theta_t
     pretrained = utils.load_classifier(args.base_model).to(DEVICE)
@@ -133,12 +136,12 @@ def run_merge(
     args,
 ):
 
-    args.model_path_template='../roberta/{name}/roberta-base_lr1e-05'
-    args.head_path_template='../roberta/{name}/roberta-base_lr1e-05/classifier_head.pt'
+    args.model_path_template = MODEL_ROOT + '/{name}/roberta-base_lr1e-05'
+    args.head_path_template = MODEL_ROOT + '/{name}/roberta-base_lr1e-05/classifier_head.pt'
     expert_performance_key = 'base'
     if 'large' in args.base_model:
-        args.model_path_template='../roberta_large/{name}/roberta-large_lr1e-05'
-        args.head_path_template='../roberta_large/{name}/roberta-large_lr1e-05/classifier_head.pt'
+        args.model_path_template = MODEL_LARGE_ROOT + '/{name}/roberta-large_lr1e-05'
+        args.head_path_template = MODEL_LARGE_ROOT + '/{name}/roberta-large_lr1e-05/classifier_head.pt'
         expert_performance_key = 'large'
 
     if 'base' in args.base_model:
@@ -192,7 +195,7 @@ def run_merge(
     args.models_to_merge_dict = models_to_merge_dict
 
     if args.merge_method in ('esm', 'esm_pp'):
-        principal_data_path = getattr(args, 'principal_data_path', None) or 'data/validation.json'
+        principal_data_path = getattr(args, 'principal_data_path', None) or os.path.join(DATA_ROOT, 'validation.json')
         principal_direction_dict = get_principal_direction(
             args.models_name, args.base_model.param_dict, args.model_path_template,
             data_path=principal_data_path,
@@ -212,22 +215,36 @@ def run_merge(
             models_to_merge_dict=args.models_to_merge_dict,
             principal_direction_dict=principal_direction_dict,
             scaling=1.0,
-            orthogonalize_v=True,
-            rank=getattr(args, 'rank', 0),
+            rank=getattr(args, 'rank', 32),
         )
 
-        # Collect prototypes for routing (not needed in oracle/base mode)
+        # Collect prototypes for routing (not needed in base mode)
         eval_mode = getattr(args, 'mode', 'route')
         proto_proxy_num = getattr(args, 'prototype_proxy_num', 32)
+        router_pool = os.environ.get('ESM_POOL', 'mean')
+        _k_env = os.environ.get('ESM_K', '8')
+
+        def _parse_k(v):
+            return int(v)
+
+        if ':' in _k_env:
+            router_k = {p.split(':')[0]: _parse_k(p.split(':')[1]) for p in _k_env.split(',')}
+        else:
+            router_k = _parse_k(_k_env)
+        router_proto_src = os.environ.get('ESM_PROTO_SRC', 'base')
+        dump_records = os.environ.get('ESM_DUMP', '0') == '1'
         prototype_dict = None
         if eval_mode == "route":
-            proto_data_path = prototype_data_path if prototype_data_path else 'data/validation.json'
+            proto_data_path = prototype_data_path if prototype_data_path else os.path.join(DATA_ROOT, 'validation.json')
             prototype_dict = merger.collect_prototypes_for_moe(
                 base_model=base_model,
                 finetuned_models=models_finetuned,
                 val_data_path=proto_data_path,
                 proxy_num=proto_proxy_num,
                 device=DEVICE,
+                pool=router_pool,
+                n_clusters=router_k,
+                proto_src=router_proto_src,
             )
 
         if args.data_path is not None:
@@ -243,12 +260,60 @@ def run_merge(
             # Load base model once, register MoE hooks once
             eval_model = utils.load_classifier(base_model_name_str).to(DEVICE)
             eval_model.load_state_dict(args.base_model.param_dict, strict=False)
-            evaluator = ESMMoEEvaluator(
-                eval_model, expert_dict,
-                prototype_dict=prototype_dict,
-                mode=eval_mode,
-            )
+            eval_model.eval()
+            if eval_mode == 'route':
+                # ESM++ inference path: replace the routed Linears with a real
+                # nn.Module (so torch.compile emits ONE graph per shape) and compile
+                # the encoder. Same math as the prototype cosine router, but at
+                # ~1x the base latency.
+                from esm_moe_eval import build_routed_model
+                routed_model = build_routed_model(
+                    eval_model, expert_dict, prototype_dict, factored=True)
+                routed_model.eval()
+                if os.environ.get('ESM_COMPILE', '1') == '1':
+                    # Compile only the encoder; the per-task classifier head stays
+                    # eager so it can be swapped without re-capturing the graph.
+                    try:
+                        routed_model.roberta = torch.compile(routed_model.roberta,
+                                                             mode="reduce-overhead")
+                    except Exception as e:
+                        print(f'>>> torch.compile unavailable/failed ({e}); falling back to eager')
 
+                class _RoutedShim:
+                    current_task = None
+
+                    def __call__(self, ids, mask):
+                        return routed_model(input_ids=ids, attention_mask=mask).logits
+
+                    def clear_hooks(self):
+                        pass
+
+                    def print_routing_accuracy(self):
+                        pass
+
+                    def save_routing_accuracy(self, path):
+                        pass
+
+                evaluator = _RoutedShim()
+            else:
+                # mode == 'base': no routing, no experts, run the base model directly.
+                class _BaseShim:
+                    current_task = None
+                    routing_records = []
+
+                    def __call__(self, ids, mask):
+                        return eval_model(input_ids=ids, attention_mask=mask).logits
+
+                    def clear_hooks(self):
+                        pass
+
+                    def print_routing_accuracy(self):
+                        pass
+
+                    def save_routing_accuracy(self, path):
+                        pass
+
+                evaluator = _BaseShim()
             # Group data by task
             task_data = defaultdict(list)
             for data_item in data:
@@ -281,9 +346,7 @@ def run_merge(
                         batch_first=True, padding_value=0,
                     ).to(DEVICE)
 
-                    if eval_mode == "oracle":
-                        evaluator.current_oracle_task = data_name
-
+                    _lt = evaluator(input_ids, attention_mask)
                     logits = evaluator(input_ids, attention_mask).cpu().numpy()
                     for j, d in enumerate(batch):
                         eval_pred[data_name]['predictions'].append(logits[j:j+1])
@@ -291,14 +354,20 @@ def run_merge(
 
             evaluator.clear_hooks()
 
-            # Display and save routing accuracy (skip for oracle since it's always 100%)
+            # Display and save routing accuracy
             evaluator.print_routing_accuracy()
-            if eval_mode != "oracle":
-                rank = getattr(args, 'rank', 0)
-                seed = getattr(args, 'seed', 0)
-                routing_filename = f'routing_accuracy_rank{rank}_seed{seed}.json'
-                routing_outpath = os.path.join(args.outdir, routing_filename)
-                evaluator.save_routing_accuracy(routing_outpath)
+            rank = getattr(args, 'rank', 0)
+            seed = getattr(args, 'seed', 0)
+            routing_filename = f'routing_accuracy_rank{rank}_seed{seed}.json'
+            routing_outpath = os.path.join(args.outdir, routing_filename)
+            evaluator.save_routing_accuracy(routing_outpath)
+
+            if dump_records:
+                import json as _json
+                rec_path = os.path.join(args.outdir, 'routing_records.json')
+                with open(rec_path, 'w') as f:
+                    _json.dump(evaluator.routing_records, f)
+                print(f'Routing records saved to {rec_path}')
 
             avg_score = []
             avg_score_abs = []
@@ -337,7 +406,7 @@ def run_merge(
             merged_task_vector=merged_task_vector,
             models_finetuned=models_finetuned,
             expert_performance_key=expert_performance_key,
-            val_data_path='data/validation.json',
+            val_data_path=os.path.join(DATA_ROOT, 'validation.json'),
             left=0.0,
             right=5.0,
             tolerance=0.1,
@@ -425,7 +494,7 @@ def main(
     principal_data_path: str = None,
     merged_model_path: str = None,
     mode: str = "route",
-    rank: int = 0,
+    rank: int = 32,
     batch_size: int = 1,
 ):
 

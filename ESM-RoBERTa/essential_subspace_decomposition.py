@@ -1,9 +1,13 @@
+import os
 import torch
 import tqdm
 from collections import defaultdict
 import utils
 import eval
 import random
+
+
+DATA_ROOT = os.environ.get('DATA_ROOT', 'data')
 
 
 def get_principal_direction_svd(act_data):
@@ -73,7 +77,7 @@ def get_principal_direction(
     models_name,
     base_model_dict,
     model_path_template,
-    data_path="data/validation.json",
+    data_path=os.path.join(DATA_ROOT, 'validation.json'),
     proxy_num=64,
 ):
 

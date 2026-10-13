@@ -5,4 +5,4 @@ models_name: auto
 exclude_param: auto
 model_loader: auto
 dtype: auto
-rank: 0
+rank: 32

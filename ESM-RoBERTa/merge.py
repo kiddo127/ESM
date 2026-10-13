@@ -1,8 +1,12 @@
+import os
 import torch
 import tqdm
 import utils
 from collections import defaultdict
 from param import param
+
+
+DATA_ROOT = os.environ.get('DATA_ROOT', 'data')
 
 
 class MergingMethod:
@@ -84,7 +88,6 @@ class MergingMethod:
         models_to_merge_dict: dict,
         scaling: float = 1.0,
         principal_direction_dict=None,
-        orthogonalize_v: bool = True,
         rank: int = 0,
     ):
         """
@@ -94,7 +97,7 @@ class MergingMethod:
         Args:
             rank: low-rank expert dimension; 0 means auto d/T
         Returns:
-            expert_dict: {param_name: {task_name: {'U':, 'V':, 'V_router':, 'norm':}}}
+            expert_dict: {param_name: {task_name: {'U':, 'V':}}}
             base_model_params: base_model state_dict
         """
         T = len(models_to_merge_dict)
@@ -112,8 +115,7 @@ class MergingMethod:
             if len(base_param.shape) == 2 and param_name in principal_direction_dict.get(detect_task_name, {}):
                 experts = self._extract_experts_for_moe(
                     param_name, base_param, task_vectors_dict,
-                    principal_direction_dict, sv_reduction,
-                    orthogonalize_v=orthogonalize_v, rank=rank,
+                    principal_direction_dict, sv_reduction, rank=rank,
                 )
                 expert_dict[param_name] = experts
 
@@ -125,9 +127,12 @@ class MergingMethod:
         self,
         base_model,
         finetuned_models,
-        val_data_path="data/validation.json",
+        val_data_path=os.path.join(DATA_ROOT, 'validation.json'),
         proxy_num=32,
         device="cuda:0",
+        pool="mean",
+        n_clusters=1,
+        proto_src="finetune",
     ):
         """Collect prototype embeddings for prototype-based MoE routing."""
         from esm_moe_eval import collect_prototypes
@@ -148,6 +153,9 @@ class MergingMethod:
             val_data_path=val_data_path,
             proxy_num=proxy_num,
             device=device,
+            pool=pool,
+            n_clusters=n_clusters,
+            shared_model=base_model if proto_src == "base" else None,
         )
 
     # ==================================================================
@@ -241,15 +249,10 @@ class MergingMethod:
         return X_ortho
 
     def _extract_experts_for_moe(self, param_name, base_param, task_vectors_dict,
-                                  principal_direction_dict, sv_reduction,
-                                  orthogonalize_v=True, rank=0):
-        """
-        Extract per-task MoE experts (U_i, V_i, V_router_i) for a single param.
-        Orthgonalized V serves as router; raw U, V as expert parameters.
-        """
+                                  principal_direction_dict, sv_reduction, rank=0):
+        """Extract per-task low-rank MoE experts (U_i, V_i) for a single param."""
         device = base_param.device
         experts = {}
-        task_names = list(task_vectors_dict.keys())
 
         for task_name, tv in task_vectors_dict.items():
             task_matrix = tv.param_dict[param_name]
@@ -269,23 +272,6 @@ class MergingMethod:
                 'U': U_reduced.half(),
                 'V': V_reduced.half(),
             }
-
-        # Task-orthogonalize V for routing
-        if orthogonalize_v and len(task_names) > 1:
-            V_cat = torch.cat([experts[t]['V'].float() for t in task_names], dim=0)
-            V_cat_ortho = self._procrustes_orthogonalize(V_cat)
-
-            for i, task_name in enumerate(task_names):
-                k_i = experts[task_name]['V'].shape[0]
-                start = sum(experts[t]['V'].shape[0] for t in task_names[:i])
-                experts[task_name]['V_router'] = V_cat_ortho[start:start + k_i].half()
-        else:
-            for task_name in task_names:
-                experts[task_name]['V_router'] = experts[task_name]['V'].clone()
-
-        # Compute norms from V_router
-        for task_name in task_names:
-            experts[task_name]['norm'] = torch.norm(experts[task_name]['V_router']).item()
 
         return experts
 

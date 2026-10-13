@@ -1,5 +1,5 @@
 import os
-os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
+os.environ.setdefault('HF_ENDPOINT', 'https://hf-mirror.com')
 import json
 import tqdm
 from datasets import load_dataset
@@ -31,7 +31,7 @@ TASK_KEYS = {
 
 def prepare_glue_validation(
     model_name: str = "roberta-base",
-    output_path: str = "data/validation.json",
+    output_path: str = os.path.join(os.environ.get('DATA_ROOT', 'data'), 'validation.json'),
 ):
     """
     Tokenize GLUE validation sets and save as a single JSON file.

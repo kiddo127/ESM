@@ -2,7 +2,7 @@
 set -e pipefail
 
 date_today=$(date '+%Y-%m-%d')
-outdir=${outdir:="outs/merge_results"}
+outdir=${outdir:="${OUTPUT_ROOT:-outs}/merge_results"}
 mkdir -p ${outdir}
 
 
@@ -18,7 +18,7 @@ models_name=(
 )
 models_to_merge=()
 for d in "${models_name[@]}"; do
-models_to_merge+=(../roberta/$d/roberta-base_lr1e-05)
+models_to_merge+=("${MODEL_ROOT:-../roberta}/$d/roberta-base_lr1e-05")
 done
 select_merge=${select_merge:="8"}
 
@@ -34,7 +34,7 @@ src_merge=("${models_name[@]:0:$select_merge}")
 echo ">>> merged from $select_merge tasks"
 echo ">>> merge ${src_merge[@]}"
 
-data_path="data/test.json"
+data_path="${DATA_ROOT:-data}/test.json"
 }
 
 
@@ -53,7 +53,7 @@ fi
 src_merge=("${models_name[@]:0:$select_merge}")
 
 scaling=${scaling:="1.0"}
-principal_data_path=${principal_data_path:="data/validation.json"}
+principal_data_path=${principal_data_path:="${DATA_ROOT:-data}/validation.json"}
 seed=${seed:="10"}
 prototype_proxy_num=${prototype_proxy_num:="64"}
 
@@ -74,7 +74,7 @@ python run_merge.py \
 --exclude-param ".*classifier.*" ".*bias.*" \
 --scaling $scaling \
 --principal-data-path $principal_data_path \
---save-path ${save_path:="outs/esm_merged"} \
+--save-path ${save_path:="${OUTPUT_ROOT:-outs}/esm_merged"} \
 --prototype-proxy-num $prototype_proxy_num \
 --seed $seed \
 --outdir $outdir
@@ -99,12 +99,11 @@ function esm_pp(){
     merged_model_path=${merged_model_path:=""}
     prototype_proxy_num=${prototype_proxy_num:="64"}
     seed=${seed:="10"}
-    principal_data_path=${principal_data_path:="data/validation.json"}
+    principal_data_path=${principal_data_path:="${DATA_ROOT:-data}/validation.json"}
     mode=${mode:-route}
-    rank=${rank:-0}
+    rank=${rank:-32}
     batch_size=${batch_size:-1}
-    [ "$mode" = "oracle" ] && mode_flag="--mode oracle" || mode_flag=""
-    [ "$mode" = "base" ] && mode_flag="--mode base" || :
+    [ "$mode" = "base" ] && mode_flag="--mode base" || mode_flag=""
 
     # Build optional flags
     merged_path_flag=""

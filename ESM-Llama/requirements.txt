@@ -1,0 +1,15 @@
+# Core dependencies for ESM / ESM++ on Llama-3.2-3B
+torch>=2.0
+transformers>=4.30
+datasets>=2.14
+accelerate
+safetensors
+sentencepiece
+numpy
+tqdm
+
+# The ESM++ evaluation drivers additionally require the following external
+# harnesses (install separately, see README):
+#   lm-evaluation-harness   (lm_eval)
+#   bigcode-evaluation-harness (bigcode_eval)
+#   safety-eval-fork

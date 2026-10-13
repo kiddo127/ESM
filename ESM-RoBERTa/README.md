@@ -1,4 +1,4 @@
-# ESM-LM: Essential Subspace Merging for Language Models
+# ESM-RoBERTa: Essential Subspace Merging for Language Models
 
 This repository implements two complementary methods for multi-task model merging:
 
@@ -10,7 +10,7 @@ Based on [RoBERTa](https://arxiv.org/abs/1907.11692) fine-tuned on 8 GLUE tasks.
 ## Project Structure
 
 ```
-ESM-LM/
+ESM-RoBERTa/
 ├── config/
 │   ├── esm.yml                # ESM merge config
 │   ├── esm_pp.yml             # ESM++ routing config
@@ -60,7 +60,7 @@ This tokenizes all 8 GLUE validation sets and saves them to `data/validation.jso
 Place the prepared files in the following structure:
 
 ```
-ESM-LM/
+ESM-RoBERTa/
 ├── config/
 ├── run_merge.py
 ├── prepare_validation.py
@@ -82,6 +82,8 @@ ESM-LM/
 The 8 GLUE tasks are: `cola`, `sst2`, `mrpc`, `stsb`, `qqp`, `mnli`, `qnli`, `rte`.
 
 For roberta-large, use `../roberta_large/{task}/roberta-large_lr1e-05/`.
+
+The model root is configurable via the `MODEL_ROOT` env var (default `../roberta`; use `MODEL_LARGE_ROOT` for large models), and the data directory via `DATA_ROOT` (default `data`).
 
 ## Usage
 
@@ -130,15 +132,35 @@ CUDA_VISIBLE_DEVICES=0 rank=8 seed=0 prototype_proxy_num=32 \
 Key parameters:
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `rank` | 8 | Expert low-rank dimension (0 = auto d/T) |
-| `mode` | `route` | Routing mode: `route` / `oracle` / `base` |
+| `rank` | 32 | Expert low-rank dimension (same as ViT; `0` = auto d/T) |
+| `mode` | `route` | Routing mode: `route` / `base` |
 | `merged_model_path` | `outs/esm_merged` | Base model for MoE |
 | `prototype_proxy_num` | 32 | Proxy samples per task for routing prototypes |
 
 **Modes:**
 - `route` — prototype-based cosine similarity routing (default)
-- `oracle` — directly use the correct expert (upper bound performance)
 - `base` — no routing, run the base merged model directly
+
+ESM++ inference is fixed to the fastest path — three parts together:
+
+1. **structured router** — each routed `nn.Linear` is replaced by a real shared
+   `MoERoutedLinear` `nn.Module`, so `torch.compile` emits **one** graph per shape
+   (the old monkey-patch design produced one closure per layer → 72 specialised
+   graphs → 9–13× disaster under compile);
+2. **factored expert application** — `x@(U@V)ᵀ == (x@Vᵀ)@Uᵀ` with `U`/`V` kept
+   resident on GPU, so no per-sample `[B, d_out, d_in]` dense weight is materialised
+   (the dense path's weight traffic grows ∝ B);
+3. **`torch.compile(model.roberta, mode="reduce-overhead")`** — encoder only; the
+   per-task classifier head stays eager so it can be swapped without re-capturing.
+
+Together this runs at ~1× the base latency. Configure with environment variables:
+
+| Env var | Default | Description |
+|:--|:--|:--|
+| `ESM_K` | `8` | prototype clusters per task (`1` = single mean prototype; `task:k,...` for per-task counts) |
+| `ESM_PROTO_SRC` | `base` | prototype source: `base` (ESM-fused model) or `finetune` |
+| `ESM_POOL` | `mean` | layer-input pooling: `mean` or `cls` |
+| `ESM_COMPILE` | `1` | wrap the encoder in `torch.compile` (falls back to eager if unavailable) |
 
 ### Output
 

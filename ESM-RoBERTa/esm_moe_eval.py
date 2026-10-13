@@ -1,345 +1,112 @@
+import os
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 import random
 import tqdm
 from collections import defaultdict
 
 
-class ESMMoEEvaluator:
+DATA_ROOT = os.environ.get('DATA_ROOT', 'data')
+
+
+def _stack_prototypes_rt(prototypes, task_names):
+    """Stack per-task prototypes into [sum_k, d] + a center->task-index map."""
+    rows, center = [], []
+    for i, t in enumerate(task_names):
+        p = prototypes[t]
+        if p.dim() == 1:
+            p = p.unsqueeze(0)
+        rows.append(p.float())
+        center += [i] * p.shape[0]
+    return F.normalize(torch.cat(rows, dim=0), dim=-1), torch.tensor(center, dtype=torch.long)
+
+
+class MoERoutedLinear(nn.Module):
+    """Per-sample routed drop-in replacement for nn.Linear (RoBERTa).
+
+    Routing = the same mean-pool -> cosine -> argmax as the evaluator, but
+    packaged as a real module so the whole model can be traced by torch.compile
+    into ONE graph per shape (instead of one specialized graph per layer).
+    Expert application is the (mathematically identical) `F.linear(x, W_base+dW)`
+    — the fused weight is selected directly, no weight swap.
     """
-    Evaluator for ESM-DMoE.
 
-    Three modes:
-      - mode="route" (default): each layer routes independently via cosine similarity
-        with task prototypes. Picks the highest-scoring expert.
-      - mode="oracle": uses the pre-set current_oracle_task to directly apply the
-        correct expert's ΔW. Skips routing computation entirely.
-      - mode="base": no routing, no experts. Runs the base model directly.
+    def __init__(self, base_weight, base_bias, experts, prototypes, factored=False):
+        super().__init__()
+        dev, dt = base_weight.device, base_weight.dtype
+        self.factored = factored
+        self.register_buffer('base_weight', base_weight.clone(), persistent=False)
+        if base_bias is not None:
+            self.register_buffer('base_bias', base_bias.clone(), persistent=False)
+        else:
+            self.register_buffer('base_bias', None, persistent=False)
+        self._task_names = list(experts.keys())
+        if factored:
+            # Keep the low-rank factors (shared across samples) and apply
+            # x@(U@V)^T == (x@V^T)@U^T — avoids materializing B dense (d_out,d_in)
+            # per-sample weights, which is the large-batch memory bottleneck.
+            U_list, V_list = [], []
+            for t in self._task_names:
+                U_list.append(experts[t]['U'].to(device=dev, dtype=dt))   # (d_out, r)
+                V_list.append(experts[t]['V'].to(device=dev, dtype=dt))   # (r, d_in)
+            self.register_buffer('U_stack', torch.stack(U_list, 0), persistent=False)  # (T,d_out,r)
+            self.register_buffer('V_stack', torch.stack(V_list, 0), persistent=False)  # (T,r,d_in)
+        else:
+            fused = []
+            for t in self._task_names:
+                U = experts[t]['U'].to(device=dev, dtype=dt)
+                V = experts[t]['V'].to(device=dev, dtype=dt)
+                fused.append(base_weight + U @ V)
+            self.register_buffer('fused', torch.stack(fused, dim=0), persistent=False)  # (T,d_out,d_in)
+        proto, center = _stack_prototypes_rt(prototypes, self._task_names)
+        self.register_buffer('prototypes', proto.to(dev), persistent=False)
+        self.register_buffer('_center_to_task', center.to(dev), persistent=False)
 
-    In route/oracle modes, the expert is applied as LoRA-style ΔW (U@V), not the full
-    finetuned weights.
-    """
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        xf = x.mean(dim=1) if x.dim() == 3 else x
+        sims = F.normalize(xf, dim=-1) @ self.prototypes.t()      # (B, sum_k)
+        idx = self._center_to_task[sims.argmax(dim=-1)]           # (B,) expert index
+        if self.factored:
+            base_out = F.linear(x, self.base_weight, self.base_bias)
+            U = self.U_stack[idx]                                 # (B, d_out, r)
+            V = self.V_stack[idx]                                 # (B, r, d_in)
+            if x.dim() == 3:
+                z = torch.bmm(x, V.transpose(1, 2))               # (B, S, r)
+                return base_out + torch.bmm(z, U.transpose(1, 2))
+            z = torch.bmm(x.unsqueeze(1), V.transpose(1, 2))      # (B, 1, r)
+            return base_out + torch.bmm(z, U.transpose(1, 2)).squeeze(1)
+        w = self.fused[idx]                                       # (B, d_out, d_in)
+        if idx.numel() == 1:
+            # Single sample: use plain F.linear with the selected 2-D weight so
+            # the math is identical to the evaluator's weight-swap path
+            # (routing is near-tie; bmm vs linear rounding can flip decisions).
+            return F.linear(x, w[0], self.base_bias)
+        if x.dim() == 3:
+            out = torch.bmm(x, w.transpose(1, 2))                 # (B, S, d_out)
+        else:
+            out = torch.bmm(x.unsqueeze(1), w.transpose(1, 2)).squeeze(1)
+        if self.base_bias is not None:
+            out = out + self.base_bias
+        return out
 
-    def __init__(self, base_model, expert_dict=None, prototype_dict=None, mode="route",
-                 record_routing=True):
-        self.base_model = base_model
-        self.expert_dict = expert_dict
-        self._attention_mask = None
-        self.mode = mode
-        self.current_oracle_task = None
 
-        self.prototype_dict = prototype_dict
-        self.record_routing = record_routing
-        self.current_task = None
-        self.routing_records = []  # list of {module_name, task, winner, sim}
-
-        device = next(base_model.parameters()).device
-        dtype = next(base_model.parameters()).dtype
-
-        if mode == "base":
-            # Base mode: no experts, no routing, no patching
-            self._original_forwards = {}
-            self._module_map = {}
-            return
-
-        # Map: module_name -> experts dict
-        self.module_to_experts = {}
-        for param_name, experts in expert_dict.items():
-            if param_name.endswith('.weight'):
-                module_name = param_name[:-7]
-                self.module_to_experts[module_name] = experts
-
-        # Map: module_name -> prototype tensors (normalized, shape: [T, d_in])
-        self.module_to_prototypes = {}
-        if prototype_dict is not None:
-            for param_name, task_protos in prototype_dict.items():
-                if param_name.endswith('.weight'):
-                    module_name = param_name[:-7]
-                    self.module_to_prototypes[module_name] = task_protos
-
-        # Pre-build module lookup for fast weight access and forward patching
-        self._module_map = dict(base_model.named_modules())
-        self._original_forwards = {}
-
-        self._preprocess_experts(device, dtype)
-        self._preprocess_prototypes(device, dtype)
-
-        # Monkey-patch nn.Linear.forward on target modules
-        self._patch_linears()
-
-    # ------------------------------------------------------------------
-    #  Preprocessing
-    # ------------------------------------------------------------------
-    def _preprocess_experts(self, device, dtype):
-        """Move experts to device, compute ΔW=U@V per task per layer."""
-        self.module_to_delta_w = {}
-        self.module_to_task_names = {}
-
-        for module_name, experts in self.module_to_experts.items():
-            task_names = list(experts.keys())
-            delta_w_list = []
-
-            for task_name in task_names:
-                exp = experts[task_name]
-                exp['U'] = exp['U'].to(device=device, dtype=dtype)
-                exp['V'] = exp['V'].to(device=device, dtype=dtype)
-                delta_w_list.append(exp['U'] @ exp['V'])
-
-            self.module_to_delta_w[module_name] = delta_w_list
-            self.module_to_task_names[module_name] = task_names
-
-        # Pre-compute fused weights as stacked tensors [T, d_out, d_in]
-        self._fused_stacked = {}    # {module_name: [T, d_out, d_in]}
-        self._orig_weights = {}     # {module_name: original weight}
-        for module_name, delta_w_list in self.module_to_delta_w.items():
-            orig_w = self._module_map[module_name].weight.data
-            self._orig_weights[module_name] = orig_w
-            fused_list = [orig_w + dw for dw in delta_w_list]
-            self._fused_stacked[module_name] = torch.stack(fused_list, dim=0)
-
-        # Oracle: pre-compute per-task fused weights {task_name: {module_name: W_fused}}
-        self._oracle_fused = {}
-        for module_name, task_names in self.module_to_task_names.items():
-            delta_w_list = self.module_to_delta_w[module_name]
-            orig_w = self._orig_weights[module_name]
-            for tn, dw in zip(task_names, delta_w_list):
-                if tn not in self._oracle_fused:
-                    self._oracle_fused[tn] = {}
-                self._oracle_fused[tn][module_name] = orig_w + dw
-
-    def _preprocess_prototypes(self, device, dtype):
-        """Prepare normalized prototype tensors for routing."""
-        if self.prototype_dict is None:
-            return
-        for param_name, task_protos in self.prototype_dict.items():
-            if not param_name.endswith('.weight'):
-                continue
-            module_name = param_name[:-7]
-            if module_name not in self.module_to_prototypes:
-                continue
-            experts = self.module_to_experts.get(module_name, {})
-            task_names = list(experts.keys()) if experts else sorted(task_protos.keys())
-            proto_list = []
-            for tname in task_names:
-                proto = task_protos[tname].to(device=device, dtype=dtype)
-                # proto shape: [1, d_in] (mean-pooled, n_clusters=1)
-                proto_norm = F.normalize(proto.squeeze(0), dim=0)  # [d_in]
-                proto_list.append(proto_norm)
-            # Stack to [T, d_in]
-            self.module_to_prototypes[module_name] = torch.stack(proto_list, dim=0)
-
-    # ------------------------------------------------------------------
-    #  Monkey-patch nn.Linear.forward
-    # ------------------------------------------------------------------
-    def _patch_linears(self):
-        for module_name in self.module_to_experts:
-            module = self._module_map[module_name]
-            self._original_forwards[module_name] = module.forward
-
-            module.forward = self._make_patched_forward(
-                module, module.forward, module_name,
-            )
-
-    def _make_patched_forward(self, module, orig_forward, module_name):
-        fused_stacked = self._fused_stacked[module_name]
-        evaluator = self
-
-        if self.mode == "oracle":
-            task_names = self.module_to_task_names[module_name]
-
-            # Oracle: directly use the expert for the current task, no routing
-            def patched_forward_oracle(input):
-                fused = evaluator._oracle_fused[evaluator.current_oracle_task][module_name]
-                saved = module.weight.data
-                module.weight.data = fused
-                output = orig_forward(input)
-                module.weight.data = saved
-
-                if evaluator.record_routing and evaluator.current_task is not None:
-                    oracle_idx = task_names.index(evaluator.current_oracle_task)
-                    evaluator.routing_records.append({
-                        'module': module_name,
-                        'task': evaluator.current_task,
-                        'winner': oracle_idx,
-                        'sim': [1.0 if i == oracle_idx else 0.0 for i in range(len(task_names))],
-                        'winner_name': evaluator.current_oracle_task,
-                    })
-
-                return output
-
-            return patched_forward_oracle
-
-        # Normal mode: route via cosine similarity with prototypes
-        proto_tensor = self.module_to_prototypes.get(module_name, None)
-
-        task_names = self.module_to_task_names[module_name]
-
-        def patched_forward(input):
-            # Route: mean-pool all non-padding tokens across the batch
-            mask = evaluator._attention_mask.unsqueeze(-1).float()
-            masked_x = input * mask
-            total_tokens = mask.sum().clamp(min=1)
-            x_pooled = masked_x.sum(dim=(0, 1)) / total_tokens  # [d_in]
-            x_pooled_norm = F.normalize(x_pooled, dim=0)         # [d_in]
-
-            # Cosine similarity with each task prototype: [T]
-            sim = x_pooled_norm @ proto_tensor.T
-
-            # Pick highest-scoring expert
-            winner = sim.argmax()
-
-            if evaluator.record_routing and evaluator.current_task is not None:
-                evaluator.routing_records.append({
-                    'module': module_name,
-                    'task': evaluator.current_task,
-                    'winner': winner.item(),
-                    'sim': sim.detach().cpu().tolist(),
-                    'winner_name': task_names[winner.item()],
-                })
-
-            # Pointer swap weight, forward, restore
-            saved = module.weight.data
-            module.weight.data = fused_stacked[winner]
-            output = orig_forward(input)
-            module.weight.data = saved
-            return output
-
-        return patched_forward
-
-    # ------------------------------------------------------------------
-    #  Forward
-    # ------------------------------------------------------------------
-    @torch.inference_mode()
-    def __call__(self, input_ids, attention_mask):
-        self._attention_mask = attention_mask
-        outputs = self.base_model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-        )
-        return outputs.logits
-
-    def clear_hooks(self):
-        if hasattr(self, '_original_forwards'):
-            for module_name, orig_forward in self._original_forwards.items():
-                self._module_map[module_name].forward = orig_forward
-            self._original_forwards.clear()
-
-    def reset_routing_records(self):
-        self.routing_records.clear()
-
-    def get_routing_accuracy(self):
-        """Compute routing accuracy per layer per task.
-
-        Returns:
-            dict: {module_name: {task_name: {'accuracy': float, 'correct': int, 'total': int}}}
-        """
-        stats = defaultdict(lambda: defaultdict(lambda: {'correct': 0, 'total': 0}))
-
-        for record in self.routing_records:
-            module = record['module']
-            task = record['task']
-            winner_name = record['winner_name']
-
-            stats[module][task]['total'] += 1
-            if winner_name == task:
-                stats[module][task]['correct'] += 1
-
-        accuracy = {}
-        for module_name in sorted(stats.keys()):
-            accuracy[module_name] = {}
-            for task_name in sorted(stats[module_name].keys()):
-                counts = stats[module_name][task_name]
-                acc = counts['correct'] / counts['total'] if counts['total'] > 0 else 0.0
-                accuracy[module_name][task_name] = {
-                    'accuracy': acc,
-                    'correct': counts['correct'],
-                    'total': counts['total'],
-                }
-
-        return accuracy
-
-    def print_routing_accuracy(self):
-        """Print routing accuracy summary per layer per task."""
-        accuracy = self.get_routing_accuracy()
-        if not accuracy:
-            print("No routing records available.")
-            return
-
-        # Collect all task names
-        all_tasks = sorted(set(
-            task for module_stats in accuracy.values()
-            for task in module_stats.keys()
-        ))
-
-        # Header
-        header = f"{'Layer':<45}" + "".join(f"{t:<12}" for t in all_tasks) + f"{'Avg':<12}"
-        print("\n" + "=" * len(header))
-        print("Routing Accuracy (per layer, per task)")
-        print("=" * len(header))
-        print(header)
-        print("-" * len(header))
-
-        # Per layer
-        layer_avgs = []
-        for module_name, task_stats in accuracy.items():
-            short_name = module_name.replace('roberta.encoder.layer.', 'L').replace('encoder.layer.', 'L')
-            row = f"{short_name:<45}"
-            layer_accs = []
-            for t in all_tasks:
-                if t in task_stats:
-                    acc = task_stats[t]['accuracy']
-                    layer_accs.append(acc)
-                    row += f"{acc*100:>8.1f}%   "
-                else:
-                    row += f"{'N/A':<12}"
-            layer_avg = sum(layer_accs) / len(layer_accs) if layer_accs else 0.0
-            layer_avgs.append(layer_avg)
-            row += f"{layer_avg*100:>8.1f}%"
-            print(row)
-
-        # Footer: per-task average across layers
-        print("-" * len(header))
-        task_avgs = []
-        footer = f"{'Avg':<45}"
-        for t in all_tasks:
-            task_accs = [accuracy[m][t]['accuracy'] for m in accuracy if t in accuracy[m]]
-            task_avg = sum(task_accs) / len(task_accs) if task_accs else 0.0
-            task_avgs.append(task_avg)
-            footer += f"{task_avg*100:>8.1f}%   "
-        overall_avg = sum(task_avgs) / len(task_avgs) if task_avgs else 0.0
-        footer += f"{overall_avg*100:>8.1f}%"
-        print(footer)
-        # Compute micro-average
-        total_correct = sum(
-            accuracy[m][t]['correct'] for m in accuracy for t in accuracy[m])
-        total_samples = sum(
-            accuracy[m][t]['total'] for m in accuracy for t in accuracy[m])
-        micro_avg = (total_correct / total_samples * 100) if total_samples > 0 else 0.0
-
-        print("=" * len(header))
-        print(f"Overall routing accuracy: {overall_avg*100:.2f}% "
-              f"({micro_avg:.2f}% micro-average)")
-        print()
-
-        return accuracy
-
-    def save_routing_accuracy(self, filepath):
-        """Save routing accuracy to a JSON file."""
-        accuracy = self.get_routing_accuracy()
-        # Convert to serializable format
-        serializable = {}
-        for module_name, task_stats in accuracy.items():
-            serializable[module_name] = {}
-            for task_name, counts in task_stats.items():
-                serializable[module_name][task_name] = {
-                    'accuracy': round(counts['accuracy'], 6),
-                    'correct': counts['correct'],
-                    'total': counts['total'],
-                }
-        with open(filepath, 'w') as f:
-            import json
-            json.dump(serializable, f, indent=2)
-        print(f"Routing accuracy saved to {filepath}")
+def build_routed_model(model: nn.Module, expert_dict, prototype_dict, factored=False) -> nn.Module:
+    """Replace every routed nn.Linear with MoERoutedLinear (in place)."""
+    n = 0
+    for param_name, experts in expert_dict.items():
+        module_name = param_name[:-len('.weight')]
+        parent = model
+        parts = module_name.split('.')
+        for p in parts[:-1]:
+            parent = getattr(parent, p)
+        old = getattr(parent, parts[-1])
+        setattr(parent, parts[-1], MoERoutedLinear(
+            old.weight.data, old.bias.data if old.bias is not None else None,
+            experts, prototype_dict[param_name], factored=factored))
+        n += 1
+    print(f"Replaced {n} layers with MoERoutedLinear")
+    return model
 
 
 # ------------------------------------------------------------------
@@ -362,12 +129,30 @@ def _masked_prototype_hook(layer_weight_name, collected, collected_masks, curren
 
 
 @torch.inference_mode()
+def _kmeans(X, k, iters=25, seed=0):
+    """Minimal Lloyd's k-means. X:[N,d] -> centers [k,d]."""
+    N, d = X.shape
+    g = torch.Generator().manual_seed(seed)
+    idx = torch.randperm(N, generator=g)[:k].to(X.device)
+    C = X[idx].clone()
+    for _ in range(iters):
+        assign = torch.cdist(X, C).argmin(dim=1)
+        for j in range(k):
+            m = assign == j
+            if m.any():
+                C[j] = X[m].mean(dim=0)
+    return C
+
+
 def collect_prototypes(
     target_layer_names,
     finetuned_models,
-    val_data_path="data/validation.json",
+    val_data_path=os.path.join(DATA_ROOT, 'validation.json'),
     proxy_num=64,
     device="cuda:0",
+    pool="mean",
+    n_clusters=1,
+    shared_model=None,
 ):
     """
     Collect prototype embeddings for prototype-based MoE routing.
@@ -397,7 +182,14 @@ def collect_prototypes(
 
     for data_id, samples in proxy_data.items():
         data_name = list(eval_mod.glue_data_id_map.keys())[data_id]
-        model = finetuned_models[data_name]
+        model = shared_model if shared_model is not None else finetuned_models[data_name]
+        # Per-task cluster count: n_clusters may be an int or a {task: k} dict.
+        if isinstance(n_clusters, dict):
+            k_t = n_clusters.get(data_name, 1)
+        else:
+            k_t = n_clusters if n_clusters else 1
+        if isinstance(k_t, str) and k_t.isdigit():
+            k_t = int(k_t)
 
         collected = {}
         collected_masks = {}
@@ -421,18 +213,45 @@ def collect_prototypes(
                 attention_mask=attention_mask,
             )
 
-        for weight_name, feature_list in collected.items():
-            all_features = torch.cat(
-                [f.reshape(-1, f.shape[-1]) for f in feature_list], dim=0
-            )
-            all_masks = torch.cat(
-                [m.reshape(-1) for m in collected_masks[weight_name]], dim=0
-            )
+        # Build per-sample pooled features for each layer (needed for k>1)
+        multi = isinstance(k_t, int) and k_t > 1
+        Fs = {}
+        if multi:
+            for weight_name, feature_list in collected.items():
+                masks = collected_masks[weight_name]
+                feats = []
+                for f, m in zip(feature_list, masks):
+                    f = f.reshape(-1, f.shape[-1])          # [S, d]
+                    if pool == "cls":
+                        feats.append(f[0])                  # [CLS] token
+                    else:
+                        valid = m.reshape(-1) > 0
+                        feats.append(f[valid].mean(dim=0))  # masked token mean
+                Fs[weight_name] = torch.stack(feats, 0).float()
 
-            valid = all_masks > 0
-            feature_sum = (all_features * valid.unsqueeze(1).float()).sum(dim=0)
-            token_count = valid.sum().clamp(min=1)
-            prototype = (feature_sum / token_count).unsqueeze(0)
+        k_use = int(k_t) if isinstance(k_t, int) else 1
+
+        for weight_name, feature_list in collected.items():
+            if multi:
+                F = Fs[weight_name]
+                if k_use > 1 and F.shape[0] >= k_use:
+                    prototype = _kmeans(F, k_use)           # [k, d]
+                else:
+                    prototype = F.mean(dim=0, keepdim=True)
+            elif pool == "cls":
+                cls_feats = torch.cat([f[:, 0, :] for f in feature_list], dim=0)
+                prototype = cls_feats.mean(dim=0, keepdim=True)
+            else:
+                all_features = torch.cat(
+                    [f.reshape(-1, f.shape[-1]) for f in feature_list], dim=0
+                )
+                all_masks = torch.cat(
+                    [m.reshape(-1) for m in collected_masks[weight_name]], dim=0
+                )
+                valid = all_masks > 0
+                feature_sum = (all_features * valid.unsqueeze(1).float()).sum(dim=0)
+                token_count = valid.sum().clamp(min=1)
+                prototype = (feature_sum / token_count).unsqueeze(0)
 
             if weight_name not in prototype_dict:
                 prototype_dict[weight_name] = {}

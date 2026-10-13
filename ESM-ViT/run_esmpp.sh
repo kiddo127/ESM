@@ -59,7 +59,7 @@ for MODEL in "${MODELS[@]}"; do
             CUDA_VISIBLE_DEVICES=$GPU python esmpp.py \
                 model="$MODEL" num_tasks="$NUM_TASKS" \
                 batch_size=$BATCH pca_batch_size=$PCA_BATCH \
-                lora_rank=32 oracle_routing=False \
+                lora_rank=32 \
                 proxy_n_samples=32 \
                 results_save_path="$ROUTED_OUT" \
                 $MAIN_MODEL_ARG

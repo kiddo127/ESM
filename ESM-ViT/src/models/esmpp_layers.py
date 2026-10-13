@@ -13,6 +13,41 @@ import torch.nn.functional as F
 from typing import Dict, List, Optional, Tuple
 
 
+def _stack_prototypes(prototypes: Dict[str, torch.Tensor], task_names: List[str]):
+    """Stack per-task prototypes into [sum_k, d] + a center->task-index map.
+
+    Each task may contribute a single [d] prototype or a [k, d] set of cluster
+    centers; routing then picks the nearest center and maps it back to its task.
+    """
+    rows, center_task = [], []
+    for i, name in enumerate(task_names):
+        p = prototypes[name]
+        if p.dim() == 1:
+            p = p.unsqueeze(0)
+        rows.append(p.float())
+        center_task += [i] * p.shape[0]
+    proto = F.normalize(torch.cat(rows, dim=0), dim=-1)
+    return proto, torch.tensor(center_task, dtype=torch.long)
+
+
+def _stack_factors(experts, task_names: List[str]):
+    """Stack low-rank factors into GPU-resident tensors [T, r, d_in] / [T, d_out, r].
+
+    Experts may have different ranks; shorter ones are zero-padded (exact, since
+    B@A is unchanged when the extra coefficients are zero).
+    """
+    rmax = max(experts[n].A.shape[0] for n in task_names)
+    A_list, B_list = [], []
+    for n in task_names:
+        A, B = experts[n].A.float(), experts[n].B.float()   # (r,d_in), (d_out,r)
+        if A.shape[0] < rmax:
+            A = F.pad(A, (0, 0, 0, rmax - A.shape[0]))
+            B = F.pad(B, (0, rmax - B.shape[0]))
+        A_list.append(A)
+        B_list.append(B)
+    return torch.stack(A_list, 0), torch.stack(B_list, 0)
+
+
 class LoRAExpert(nn.Module):
     """Low-rank expert parameters for a single task at a single layer.
 
@@ -66,25 +101,21 @@ class MoERoutedLinearPerSample(nn.Module):
             [experts[name] for name in self._task_names]
         )
 
-        # Prototypes: pre-normalized and stacked for vectorized routing
-        proto_list = [prototypes[name] for name in self._task_names]
-        self.register_buffer(
-            'prototypes', F.normalize(torch.stack(proto_list, dim=0), dim=-1),
-            persistent=False,
-        )
+        # Prototypes: pre-normalized, stacked [sum_k, d] (+ center->task map)
+        proto, center_task = _stack_prototypes(prototypes, self._task_names)
+        self.register_buffer('prototypes', proto, persistent=False)
+        self.register_buffer('_center_to_task', center_task, persistent=False)
 
-        # Pre-compute all deltas stacked (T, d_out, d_in) on CPU; moved to GPU on use
+        # Low-rank factors resident on GPU: apply (x@A^T)@B^T.
+        A_stack, B_stack = _stack_factors(experts, self._task_names)
+        self.register_buffer('A_stack', A_stack, persistent=False)   # (T, r, d_in)
+        self.register_buffer('B_stack', B_stack, persistent=False)   # (T, d_out, r)
+
         self._num_experts = len(self._task_names)
-        self.forced_task: Optional[str] = None
 
         # Recording state for routing accuracy measurement
         self.recording: bool = False
         self._recorded_indices: List[torch.Tensor] = []
-
-    def set_forced_expert(self, task_name: Optional[str]):
-        assert task_name is None or task_name in self._task_names, \
-            f"Unknown task '{task_name}'. Available: {self._task_names}"
-        self.forced_task = task_name
 
     def start_recording(self):
         """Clear previous recordings and enable routing index collection."""
@@ -101,25 +132,9 @@ class MoERoutedLinearPerSample(nn.Module):
             return torch.cat(self._recorded_indices, dim=0)
         return None
 
-    def _get_all_deltas_cpu(self) -> torch.Tensor:
-        """Return stacked deltas (T, d_out, d_in) on CPU, cached after first call.
-
-        Kept on CPU to avoid OOM: for ViT-L-14 × 20 tasks, all cached GPU deltas
-        would consume ~14 GB across 48 routed layers.
-        """
-        if not hasattr(self, '_cached_deltas_cpu'):
-            self._cached_deltas_cpu = torch.stack(
-                [e.get_delta() for e in self.experts]
-            )
-        return self._cached_deltas_cpu
-
     def _route_per_sample(self, x: torch.Tensor) -> torch.Tensor:
         """Per-sample routing: returns (B,) LongTensor of expert indices."""
         B = x.shape[0]
-
-        if self.forced_task is not None:
-            idx = self._task_names.index(self.forced_task)
-            return torch.full((B,), idx, device=x.device, dtype=torch.long)
 
         # Per-sample feature: mean over tokens (if 3D) or raw (if 2D)
         if x.dim() == 3:
@@ -127,10 +142,11 @@ class MoERoutedLinearPerSample(nn.Module):
         else:
             x_feat = x  # (B, d_in)
 
-        # Cosine similarity with all prototypes: (B, d_in) @ (d_in, T) = (B, T)
+        # Cosine similarity with all prototypes: (B, d_in) @ (d_in, sum_k)
         x_norm = F.normalize(x_feat, dim=-1)
         sims = torch.mm(x_norm, self.prototypes.t())
-        indices = sims.argmax(dim=-1)  # (B,) — one expert index per sample
+        winners = sims.argmax(dim=-1)  # (B,) — nearest center
+        indices = self._center_to_task.to(sims.device)[winners]  # -> expert index
 
         if self.recording:
             self._recorded_indices.append(indices.detach().cpu())
@@ -140,24 +156,15 @@ class MoERoutedLinearPerSample(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         indices = self._route_per_sample(x)  # (B,)
 
-        # Index into CPU deltas; only the selected (B, d_out, d_in) subset
-        # moves to GPU — avoids materializing all T deltas on GPU.
-        all_deltas_cpu = self._get_all_deltas_cpu()  # (T, d_out, d_in) on CPU
-        selected_deltas = all_deltas_cpu[indices.cpu()].to(
-            device=x.device, dtype=x.dtype
-        )  # (B, d_out, d_in)
-
-        # Base output + per-sample delta contributions (no W_eff materialization)
+        # x@(B@A)^T == (x@A^T)@B^T, with factors resident on GPU.
+        A_sel = self.A_stack[indices]                   # (B, r, d_in)
+        B_sel = self.B_stack[indices]                   # (B, d_out, r)
         base_out = F.linear(x, self.base_weight, self.base_bias)
-
         if x.dim() == 3:
-            # (B, N, d_in) @ (B, d_in, d_out) -> (B, N, d_out)
-            delta_out = torch.bmm(x, selected_deltas.transpose(1, 2))
-        else:
-            # (B, d_in) -> (B, 1, d_in) @ (B, d_in, d_out) -> (B, 1, d_out) -> (B, d_out)
-            delta_out = torch.bmm(x.unsqueeze(1), selected_deltas.transpose(1, 2)).squeeze(1)
-
-        return base_out + delta_out
+            z = torch.bmm(x, A_sel.transpose(1, 2))         # (B, N, r)
+            return base_out + torch.bmm(z, B_sel.transpose(1, 2))
+        z = torch.bmm(x.unsqueeze(1), A_sel.transpose(1, 2))            # (B, 1, r)
+        return base_out + torch.bmm(z, B_sel.transpose(1, 2)).squeeze(1)
 
 
 class MoEMultiheadAttentionPerSample(nn.Module):
@@ -210,23 +217,19 @@ class MoEMultiheadAttentionPerSample(nn.Module):
             [experts[name] for name in self._task_names]
         )
 
-        # Stacked prototypes (T, embed_dim), pre-normalized
-        proto_list = [prototypes[name] for name in self._task_names]
-        self.register_buffer(
-            'prototypes', F.normalize(torch.stack(proto_list, dim=0), dim=-1),
-            persistent=False,
-        )
+        # Stacked prototypes [sum_k, embed_dim], pre-normalized (+ center->task map)
+        proto, center_task = _stack_prototypes(prototypes, self._task_names)
+        self.register_buffer('prototypes', proto, persistent=False)
+        self.register_buffer('_center_to_task', center_task, persistent=False)
 
-        self.forced_task: Optional[str] = None
+        # Low-rank factors resident on GPU.
+        A_stack, B_stack = _stack_factors(experts, self._task_names)
+        self.register_buffer('A_stack', A_stack, persistent=False)   # (T, r, embed)
+        self.register_buffer('B_stack', B_stack, persistent=False)   # (T, 3*embed, r)
 
         # Recording state for routing accuracy measurement
         self.recording: bool = False
         self._recorded_indices: List[torch.Tensor] = []
-
-    def set_forced_expert(self, task_name: Optional[str]):
-        assert task_name is None or task_name in self._task_names, \
-            f"Unknown task '{task_name}'. Available: {self._task_names}"
-        self.forced_task = task_name
 
     def start_recording(self):
         """Clear previous recordings and enable routing index collection."""
@@ -243,26 +246,9 @@ class MoEMultiheadAttentionPerSample(nn.Module):
             return torch.cat(self._recorded_indices, dim=0)
         return None
 
-    def _get_all_deltas_cpu(self) -> torch.Tensor:
-        """Return stacked deltas (T, 3*embed_dim, embed_dim) on CPU, cached after
-        first call.
-
-        Kept on CPU to avoid OOM: for ViT-L-14 × 20 tasks, all cached GPU deltas
-        would consume ~14 GB across 48 routed layers.
-        """
-        if not hasattr(self, '_cached_deltas_cpu'):
-            self._cached_deltas_cpu = torch.stack(
-                [e.get_delta() for e in self.experts]
-            )
-        return self._cached_deltas_cpu
-
     def _route_per_sample(self, x: torch.Tensor) -> torch.Tensor:
         """Per-sample routing: returns (B,) LongTensor of expert indices."""
         B = x.shape[0]
-
-        if self.forced_task is not None:
-            idx = self._task_names.index(self.forced_task)
-            return torch.full((B,), idx, device=x.device, dtype=torch.long)
 
         # Per-sample feature: mean over tokens
         if x.dim() == 3:
@@ -272,7 +258,8 @@ class MoEMultiheadAttentionPerSample(nn.Module):
 
         x_norm = F.normalize(x_feat, dim=-1)
         sims = torch.mm(x_norm, self.prototypes.t())
-        indices = sims.argmax(dim=-1)
+        winners = sims.argmax(dim=-1)
+        indices = self._center_to_task.to(sims.device)[winners]
 
         if self.recording:
             self._recorded_indices.append(indices.detach().cpu())
@@ -301,17 +288,13 @@ class MoEMultiheadAttentionPerSample(nn.Module):
 
         indices = self._route_per_sample(query)  # (B,)
 
-        # Index into CPU deltas; only selected (B, 3*E, E) subset moves to GPU.
-        all_deltas_cpu = self._get_all_deltas_cpu()  # (T, 3*E, E) on CPU
-        selected_deltas = all_deltas_cpu[indices.cpu()].to(
-            device=query.device, dtype=query.dtype
-        )  # (B, 3*E, E)
-
         # === Per-sample QKV projection via bmm ===
-        # Split base + delta to avoid materializing W_eff (B, 3*E, E).
         base_qkv = F.linear(query, self.in_proj_weight, self.in_proj_bias)
-        delta_qkv = torch.bmm(query, selected_deltas.transpose(1, 2))
-        qkv = base_qkv + delta_qkv
+        # x@(B@A)^T == (x@A^T)@B^T with GPU-resident factors
+        A_sel = self.A_stack[indices]                        # (B, r, E)
+        B_sel = self.B_stack[indices]                        # (B, 3*E, r)
+        z = torch.bmm(query, A_sel.transpose(1, 2))          # (B, L, r)
+        qkv = base_qkv + torch.bmm(z, B_sel.transpose(1, 2))
 
         q, k, v = qkv.chunk(3, dim=-1)
         # q, k, v: (B, L, E) each
@@ -355,7 +338,9 @@ def build_moe_model_per_sample(
 
     Replaces attention and MLP layers with per-sample routing variants
     (:class:`MoERoutedLinearPerSample` /
-    :class:`MoEMultiheadAttentionPerSample`).
+    :class:`MoEMultiheadAttentionPerSample`). Each layer keeps its low-rank
+    factors on GPU and applies ``(x@A^T)@B^T`` — numerically equivalent to the
+    equivalent full-rank delta but without the per-sample CPU->GPU transfer.
     """
     for name, module in list(model.named_modules()):
         # === Replace nn.MultiheadAttention with MoEMultiheadAttentionPerSample ===
@@ -401,13 +386,6 @@ def build_moe_model_per_sample(
     replaced = len(routed_experts)
     print(f"Per-sample MoE model built. Replaced {replaced} layer groups.")
     return model
-
-
-def set_forced_expert_per_sample(model: nn.Module, task_name: Optional[str]):
-    """Set or clear the forced expert on every per-sample routed layer."""
-    for module in model.modules():
-        if isinstance(module, (MoERoutedLinearPerSample, MoEMultiheadAttentionPerSample)):
-            module.set_forced_expert(task_name)
 
 
 def set_recording_per_sample(model: nn.Module, recording: bool = True):

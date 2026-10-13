@@ -26,7 +26,7 @@ Datasets and pretrained/finetuned model checkpoints follow the same structure as
 
 ### Datasets
 
-Place datasets under your `data_location`. The 20 supported tasks are:
+Place datasets under your `DATA_ROOT`. The 20 supported tasks are:
 
 | 8-task | +6 (14-task) | +6 (20-task) |
 |:---|:---|:---|
@@ -38,17 +38,18 @@ Place datasets under your `data_location`. The 20 supported tasks are:
 
 For each task, a finetuned checkpoint is expected at:
 ```
-{model_location}/{model}/{Task}Val/nonlinear_finetuned.pt
+$MODEL_ROOT/{model}/{Task}Val/nonlinear_finetuned.pt
 ```
-Example: `~/model-merging-models/checkpoints/ViT-B-32/CarsVal/nonlinear_finetuned.pt`
+Example: `$MODEL_ROOT/ViT-B-32/CarsVal/nonlinear_finetuned.pt`
 
 ### Configuration
 
-Edit `config/config.yaml` or pass via command line:
+Paths are read from environment variables (falling back to the inline defaults
+in `config/config.yaml`, which you can also edit directly):
 
-```yaml
-data_location: "~/data"                              # dataset root
-model_location: "~/model-merging-models/checkpoints" # checkpoint root
+```bash
+export DATA_ROOT=/path/to/datasets           # dataset root
+export MODEL_ROOT=/path/to/finetuned_ckpts   # root holding the finetuned checkpoints
 ```
 
 ---
@@ -90,7 +91,7 @@ If no fused model is provided, ESM++ falls back to the pretrained checkpoint.
 ### Batch Runs
 
 ```bash
-bash run_esm.sh      # ESM proxy sample ablation
+bash run_esm.sh      # ESM static fusion (example)
 bash run_esmpp.sh    # ESM++ sweep over models and task counts
 ```
 
@@ -108,7 +109,7 @@ ESM-ViT/
 │   ├── config.yaml                     # Main configuration
 │   └── method/ESM.yaml                 # Method-specific parameters
 └── src/
-    ├── datasets/          (27 files)   # 20 dataset loaders + registry
+    ├── datasets/                       # 20 dataset loaders + registry
     ├── eval/
     │   ├── eval.py                     # Evaluation logic
     │   ├── eval_utils.py               # ESM evaluation pipeline

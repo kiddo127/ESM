@@ -1,5 +1,5 @@
 import os
-os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
+os.environ.setdefault('HF_ENDPOINT', 'https://hf-mirror.com')
 import torch
 from collections import defaultdict
 import tqdm
@@ -10,6 +10,7 @@ import random
 from param import param
 
 DEVICE = 'cuda'
+DATA_ROOT = os.environ.get('DATA_ROOT', 'data')
 
 
 def sample_val_data(val_data_path, num_samples_per_task=64, seed=42):
@@ -279,7 +280,7 @@ def search_scaling_for_merge(
     merged_task_vector,
     models_finetuned,
     expert_performance_key='base',
-    val_data_path='data/validation.json',
+    val_data_path=os.path.join(DATA_ROOT, 'validation.json'),
     left=0.0,
     right=20.0,
     tolerance=0.1,

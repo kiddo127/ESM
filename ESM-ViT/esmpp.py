@@ -26,7 +26,6 @@ from src.models.heads import get_classification_head
 from src.models.esmpp_layers import (
     LoRAExpert,
     build_moe_model_per_sample,
-    set_forced_expert_per_sample,
     set_recording_per_sample,
     get_all_routing_decisions_per_sample,
 )
@@ -226,6 +225,106 @@ def _forward_and_collect(cfg, ft_state_dicts, task_vector_dict,
 
 
 # ---------------------------------------------------------------------------
+# Multi-prototype collection from a chosen encoder (finetuned or fused main)
+# ---------------------------------------------------------------------------
+class _PrototypeCollectorMulti:
+    """Collect per-sample pooled features (for k-means prototypes)."""
+
+    def __init__(self):
+        self.feats = []
+
+    def __call__(self, module, input_tensor, output_tensor):
+        with torch.no_grad():
+            x = input_tensor[0]
+            if x.dim() == 3:
+                f = x.mean(dim=1)          # (B, d) per-sample mean over tokens
+            elif x.dim() == 2:
+                f = x
+            else:
+                return
+            self.feats.append(f.detach().float().cpu())
+
+    def get_features(self):
+        return torch.cat(self.feats, dim=0) if self.feats else None
+
+
+def _kmeans(X, k, iters=25, seed=0):
+    """Lloyd's k-means on GPU. X:[N,d] -> centers [k,d]."""
+    N = X.shape[0]
+    g = torch.Generator().manual_seed(seed)
+    idx = torch.randperm(N, generator=g)[:k].to(X.device)
+    C = X[idx].clone()
+    for _ in range(iters):
+        assign = torch.cdist(X, C).argmin(dim=1)
+        for j in range(k):
+            m = assign == j
+            if m.any():
+                C[j] = X[m].mean(dim=0)
+    return C
+
+
+def _collect_prototypes_state(cfg, get_encoder, routed_param_keys, device, k, proxy_n, seed):
+    """Collect [k,d] prototypes per task by forwarding `get_encoder(task)` on the
+    task's proxy samples. get_encoder('base') returns the fused main encoder."""
+    proto_dict_all = {key: {} for key in routed_param_keys}
+
+    for dataset in cfg.DATASETS_VAL:
+        task_name = dataset.replace("Val", "")
+        encoder = get_encoder(task_name).to(device)
+
+        cols, handles = {}, []
+        for key in routed_param_keys:
+            mod_name = _param_key_to_module_name(key)
+            try:
+                module = encoder.get_submodule(mod_name)
+            except AttributeError:
+                continue
+            col = _PrototypeCollectorMulti()
+            handles.append(module.register_forward_hook(col))
+            cols[key] = col
+
+        classification_head = get_classification_head(cfg, dataset)
+        classifier = ImageClassifier(encoder, classification_head)
+        classifier.eval()
+        dataset_obj = get_dataset(
+            dataset, classifier.val_preprocess,
+            location=cfg.data_location, batch_size=cfg.pca_batch_size,
+        )
+
+        test_ds = dataset_obj.test_dataset
+        n_available = len(test_ds)
+        n_samples = min(proxy_n, n_available)
+        rng = np.random.RandomState(seed)
+        indices = rng.choice(n_available, size=n_samples, replace=False)
+
+        from torch.utils.data import Subset, DataLoader
+        dataloader = DataLoader(Subset(test_ds, indices.tolist()),
+                                batch_size=cfg.pca_batch_size, shuffle=False)
+        with torch.no_grad():
+            for batch_data in dataloader:
+                batch_data = maybe_dictionarize(batch_data)
+                x = batch_data["images"].to(device)
+                _ = utils.get_logits(x, classifier)
+
+        for h in handles:
+            h.remove()
+
+        for key, col in cols.items():
+            F = col.get_features()
+            if F is None:
+                continue
+            F = F.to(device)
+            if k > 1 and F.shape[0] >= k:
+                proto_dict_all[key][task_name] = _kmeans(F, k, seed=seed).cpu()
+            else:
+                proto_dict_all[key][task_name] = F.mean(dim=0, keepdim=True).cpu()
+
+        print(f"  [{task_name}] prototypes collected, k={k}")
+
+    return proto_dict_all
+
+
+# ---------------------------------------------------------------------------
 # Extract LoRA experts from principal directions
 # ---------------------------------------------------------------------------
 def _extract_lora_experts(pd_dict_all, task_vector_dict, routed_param_keys, rank, device):
@@ -388,6 +487,29 @@ def esmpp(cfg: DictConfig) -> None:
         cfg, ft_state_dicts, task_vector_dict, routed_param_keys, device,
     )
 
+    # ---- Prototype source / cluster count ---------------------------------
+    # proto_src: 'base' (ESM-fused main model, matches the deployment-time model)
+    #            or 'finetune' (the task's own finetuned model).
+    # proto_k:   clusters per task (1 = single mean prototype).
+    proto_src = cfg.get("proto_src", "base")
+    proto_k = int(cfg.get("proto_k", 1))
+    if proto_src != "finetune" or proto_k > 1:
+        print("\n" + "=" * 70)
+        print(f"Re-collecting prototypes: src={proto_src}, k={proto_k} "
+              f"(proxy_n={cfg.get('proxy_n_samples', 128)})")
+
+        def _get_encoder(task_name):
+            if proto_src == "base":
+                return main_encoder
+            dt_name = task_name
+            ft_path = get_finetuned_path(cfg.model_location, dt_name, cfg.model)
+            return ImageEncoder.load(cfg.model, ft_path)
+
+        proto_dict_all = _collect_prototypes_state(
+            cfg, _get_encoder, routed_param_keys, device,
+            proto_k, cfg.get("proxy_n_samples", 128), seed,
+        )
+
     # ---- Phase 4: Extract LoRA experts ----------------------------------
     print("\n" + "=" * 70)
     print("Phase 4: Extracting LoRA experts from principal directions")
@@ -401,8 +523,19 @@ def esmpp(cfg: DictConfig) -> None:
     # ---- Phase 6: Build per-sample MoE model ----------------------------
     print("\n" + "=" * 70)
     print("Phase 6: Assembling per-sample MoE model")
-    moe_model = build_moe_model_per_sample(main_encoder, routed_experts, proto_dict_all)
+    moe_model = build_moe_model_per_sample(
+        main_encoder, routed_experts, proto_dict_all,
+    )
     moe_model.eval()
+
+    # Inference-EQUIVALENT speedup: torch.compile (CUDA graphs + fusion) over the
+    # GPU-resident low-rank experts. Falls back to eager if compilation fails.
+    if bool(cfg.get("compile_model", True)):
+        try:
+            moe_model = torch.compile(moe_model, mode="reduce-overhead")
+            print("torch.compile(mode='reduce-overhead'): OK")
+        except Exception as e:  # noqa: BLE001
+            print(f"torch.compile failed ({type(e).__name__}: {e}); using eager")
 
     # ---- Phase 7: Evaluation -------------------------------------------
     print("\n" + "=" * 70)
@@ -416,31 +549,24 @@ def esmpp(cfg: DictConfig) -> None:
     with open(ft_accuracies_path) as f:
         ft_accuracies = json.load(f)
 
-    use_oracle = cfg.get("oracle_routing", False)
     per_dataset_results = {}
     all_routing_decisions = {}  # dataset_name -> {layer_name: {"indices": tensor, "task_names": list}}
 
     for dataset_name in cfg.DATASETS:
-        if use_oracle:
-            set_forced_expert_per_sample(moe_model, dataset_name)
-            results = eval_single_dataset(moe_model, dataset_name, cfg)
-        else:
-            set_forced_expert_per_sample(moe_model, None)
-            results, routing_decisions = eval_single_dataset_with_routing(
-                moe_model, dataset_name, cfg
-            )
-            all_routing_decisions[dataset_name] = routing_decisions
+        results, routing_decisions = eval_single_dataset_with_routing(
+            moe_model, dataset_name, cfg
+        )
+        all_routing_decisions[dataset_name] = routing_decisions
 
         top1 = results["top1"]
         normalized_top1 = top1 / ft_accuracies[dataset_name]
         per_dataset_results[dataset_name + ":top1"] = top1
         per_dataset_results[dataset_name + ":normalized_top1"] = normalized_top1
-        routing_mode = "oracle" if use_oracle else "per-sample"
-        print(f"  [{routing_mode:10s}] {dataset_name:20s}  top1={100*top1:5.2f}%  normalized={100*normalized_top1:5.2f}%")
+        print(f"  [{'per-sample':10s}] {dataset_name:20s}  top1={100*top1:5.2f}%  normalized={100*normalized_top1:5.2f}%")
 
-    # ---- Compute routing accuracy (route mode only) ----------------------
+    # ---- Compute routing accuracy ---------------------------------------
     routing_accuracy = {}
-    if not use_oracle and all_routing_decisions:
+    if all_routing_decisions:
         # Get all layer names from the first dataset's routing decisions
         first_dataset = next(iter(all_routing_decisions))
         layer_names = sorted(all_routing_decisions[first_dataset].keys())
@@ -489,13 +615,12 @@ def esmpp(cfg: DictConfig) -> None:
     # ---- Save results --------------------------------------------------
     save_path = cfg.get("results_save_path", "")
     if save_path:
-        routing_mode = "oracle" if use_oracle else "per_sample"
         save_data = {
             "model": cfg.model,
             "num_tasks": cfg.num_tasks,
             "lora_rank": rank,
             "main_model": "fused" if main_model_path else "pretrained",
-            "routing_mode": routing_mode,
+            "routing_mode": "per_sample",
             "total_time_sec": round(eval_total, 2),
             "avg_top1": round(100 * avg_top1, 2),
             "avg_normalized_top1": round(100 * avg_normalized_top1, 2),

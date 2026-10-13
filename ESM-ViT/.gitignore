@@ -11,8 +11,10 @@ multirun/
 # WandB
 wandb/
 
-# Results (generated at runtime)
-results/
+# Results (generated at runtime), except the single-task reference accuracies
+# that the ESM++ evaluation reads at runtime.
+results/*
+!results/single_task/
 
 # Merged models
 merged_models/
