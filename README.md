@@ -15,15 +15,15 @@
 ## Results
 
 
-### Vision Model Merging
+### Vision Model Merging (ViT)
 
 ![Performance](assets/vit_performance.png)
 
-### Discriminative Language Model Merging
+### Discriminative Language Model Merging (RoBERTa-Base)
 
 ![Performance](assets/roberta_performance.png)
 
-### Generative Language Model Merging
+### Generative Language Model Merging (Llama-3.2-3B)
 
 ![Performance](assets/llama_performance.png)
 
