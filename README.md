@@ -1,6 +1,6 @@
 # Essential Subspace Merging
 
-[ESM-ViT](ESM-ViT/) | [ESM-RoBERTa](ESM-RoBERTa/)
+[ESM-ViT](ESM-ViT/) | [ESM-RoBERTa](ESM-RoBERTa/) | [ESM-Llama](ESM-Llama/)
 
 **ESM** (static merging) and **ESM++** (dynamic merging) are two training-free methods for merging multiple task-specific models into a single unified model. They require only a handful of unlabeled proxy samples (≤32 per task) — no retraining, no gradient-based optimization.
 
