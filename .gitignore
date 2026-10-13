@@ -19,6 +19,8 @@ checkpoint-*/
 *.npz
 *.npy
 *.parquet
+# ...but keep the single-task reference accuracies (read at runtime by esmpp.py)
+!ESM-ViT/results/single_task/*/*.json
 
 # Docs (except README)
 *.md
@@ -27,4 +29,3 @@ checkpoint-*/
 
 # Allow assets
 !assets/*.png
-
