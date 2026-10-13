@@ -2,11 +2,11 @@
 
 [ESM-ViT](ESM-ViT/) | [ESM-RoBERTa](ESM-RoBERTa/)
 
-**ESM** (Essential Subspace Merging) and **ESM++** (Essential Subspace Routing) are two training-free methods for merging multiple task-specific models into a single unified model. They require only a handful of unlabeled proxy samples (≤32 per task) — no retraining, no gradient-based optimization.
+**ESM** (Static Merging) and **ESM++** (Dynamic Merging) are two training-free methods for merging multiple task-specific models into a single unified model. They require only a handful of unlabeled proxy samples (≤32 per task) — no retraining, no gradient-based optimization.
 
-- **ESM** — static merge: compresses all experts into **one compact model** with single-model inference cost.
+- **ESM**: compresses all experts into **one compact model** with single-model inference cost.
 ![ESM](assets/ESM_M.png)
-- **ESM++** — dynamic routing: builds a lightweight **mixture of experts** on top of the ESM base, routing each input to the best expert via cosine similarity with pre-computed prototypes.
+- **ESM++**: builds a lightweight **mixture of experts** on top of the ESM base, routing each input to the best expert via cosine similarity with pre-computed prototypes.
 ![ESM++](assets/ESM_R.png)
 
 ---
