@@ -29,25 +29,6 @@
 
 ---
 
-## Project Structure
-
-```
-ESM/
-├── README.md
-├── ESM-RoBERTa/           # NLP: RoBERTa on GLUE
-│   ├── run_merge.py        # Main entry point
-│   ├── merge.py            # ESM + ESM++ core algorithms
-│   ├── esm_moe_eval.py     # ESM++ routing evaluator
-│   ├── essential_subspace_decomposition.py
-│   ├── search_scaling.py   # Alpha search for ESM
-│   ├── prepare_validation.py
-│   └── ...
-└── ESM-ViT/               # Vision: ViT on visual benchmarks
-    ├── esm.py / esmpp.py
-    ├── essential_subspace_decomposition.py
-    └── src/
-```
-
 ## 📝 Citation
 If you use this work in your research, please cite our paper:
 
