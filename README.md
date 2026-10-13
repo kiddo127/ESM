@@ -42,7 +42,7 @@ If you use this work in your research, please cite our paper:
 }
 @article{li2026essential,
   title={Data-Aware Model Merging in the Essential Subspace for Multi-Task Knowledge Aggregation},
-  author={Li, Longhua and Qi, Lei and Geng, Xin and Tian, Qi},
+  author={Li, Longhua and Qi, Lei and Tian, Qi and Geng, Xin},
   journal={arXiv preprint arXiv:2606.19164},
   year={2026}
 }
