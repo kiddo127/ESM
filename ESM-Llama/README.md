@@ -55,8 +55,7 @@ checkpoints from `MergeBench/Llama-3.2-3B_{task}`. No local dataset layout is ne
    python capture_layer_stats.py          # writes ./layer_stats.pt
    ```
 
-2. **Merge** (default global scaling coefficient `0.9`; the eigenvalue-weighting
-   exponent defaults to `0.15`):
+2. **Merge**:
 
    ```bash
    python ./merging/main.py \
@@ -125,17 +124,6 @@ activation and per-task prototypes. It uses the ESM-fused model as the base.
 | `--moe-rank` | `64` |
 | `--moe-scaling` | `1.0` |
 | `--base-mode` / `--oracle-task` | evaluation baselines (no-expert / forced correct expert) |
-
----
-
-## Inference: `fix_agg` (the only routing path)
-
-ESM++ routes **once per batch**: it runs an aggregated routing pass on the whole
-batch, groups samples by their dominant expert, folds each expert's `U@V` (and its
-nonlinear params) into the model weights, and generates each group with a plain
-forward — the mathematical equivalent of a per-token LoRA hook, but at base-model
-speed (no per-token routing). This is the single routing implementation shipped here;
-the slower per-token-hook and per-layer variants have been removed.
 
 ---
 
