@@ -2,7 +2,7 @@
 
 [ESM-ViT](ESM-ViT/) | [ESM-RoBERTa](ESM-RoBERTa/) | [ESM-Llama](ESM-Llama/)
 
-**ESM** (static merging) and **ESM++** (dynamic merging) are two training-free methods for merging multiple task-specific models into a single unified model. They require only a handful of unlabeled proxy samples (≤32 per task) — no retraining, no gradient-based optimization.
+[**ESM**](https://openaccess.thecvf.com/content/CVPR2026/html/Li_Model_Merging_in_the_Essential_Subspace_CVPR_2026_paper.html) (static merging) and [**ESM++**](https://arxiv.org/abs/2606.19164) (dynamic merging) are two training-free methods for merging multiple task-specific models into a single unified model. They require only a handful of unlabeled proxy samples (≤32 per task) — no retraining, no gradient-based optimization.
 
 - **ESM**: compresses all experts into **one compact model** with single-model inference cost.
 ![ESM](assets/ESM_M.png)
